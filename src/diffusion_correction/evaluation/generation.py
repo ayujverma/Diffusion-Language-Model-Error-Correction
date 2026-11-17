@@ -82,6 +82,42 @@ def generate(adapter: DiffusionAdapter, examples: Sequence[Example], budget: int
                          wall_seconds=time.perf_counter() - t_wall)
 
 
+def by_setting(records: Sequence[dict]) -> list[dict]:
+    """Per (family, length, digits) counts and rates from ``score`` records; explicit denominators."""
+    groups: dict[tuple, list[dict]] = {}
+    for r in records:
+        groups.setdefault((r["family"], int(r["length"]), int(r["operand_digits"])), []).append(r)
+    rows = []
+    for (fam, length, digits), rs in sorted(groups.items()):
+        n = len(rs)
+        n_values = sum(len(r["value_correct"]) for r in rs)
+        n_tokens = sum(len(r["response_ids"]) for r in rs)
+        malformed = sum(any(s != "ok" for s in r["slot_status"]) for r in rs)
+        rows.append({"family": fam, "length": length, "operand_digits": digits, "n_examples": n,
+                     "final_correct": sum(r["final_correct"] for r in rs),
+                     "final_answer_accuracy": sum(r["final_correct"] for r in rs) / n,
+                     "trace_accuracy": sum(r["trace_correct"] for r in rs) / n,
+                     "value_accuracy": sum(sum(r["value_correct"]) for r in rs) / n_values,
+                     "token_accuracy": 1 - sum(r["n_token_errors"] for r in rs) / n_tokens,
+                     "malformed_examples": malformed, "malformed_example_rate": malformed / n,
+                     "model_calls_total": sum(r["calls"] for r in rs)})
+    return rows
+
+
+def selection_score(records: Sequence[dict]) -> dict:
+    """D-033 monitoring score: final-answer accuracy averaged over the settings of each family
+    (equal weight per setting), then over families (equal weight per family)."""
+    rows = by_setting(records)
+    fams: dict[str, list[float]] = {}
+    for r in rows:
+        fams.setdefault(r["family"], []).append(r["final_answer_accuracy"])
+    per_family = {f: sum(v) / len(v) for f, v in sorted(fams.items())}
+    return {"score": sum(per_family.values()) / len(per_family), "per_family": per_family,
+            "settings_per_family": {f: len(v) for f, v in sorted(fams.items())},
+            "n_examples": sum(r["n_examples"] for r in rows),
+            "weighting": "mean over families of the mean over that family's settings of final-answer accuracy"}
+
+
 def score(examples: Sequence[Example], run: GenerationRun, tf: TokenizedFormat) -> tuple[list[dict], dict]:
     """Per-example records and an aggregate over the examples that were run."""
     records, checks = [], []

@@ -32,6 +32,25 @@ def sampler_allowed(adapter, tf: TokenizedFormat) -> torch.Tensor:
                               extra_forbidden=(adapter.tokens.mask_token_id,))
 
 
+def load_problem_id_subset(data_dir: str, manifest_sha256: str, ids_file: str, ids_sha256: str):
+    """Fixed val subset from an explicit problem-ID list; the list's sha256 (over the IDs joined by
+    newlines, the same convention as ``selected_problem_ids_sha256``) must match the config."""
+    from ..data.splits import sha256_bytes
+
+    ids = json.loads(Path(ids_file).read_text())["problem_ids"]
+    got = sha256_bytes("\n".join(ids).encode())
+    if got != ids_sha256:
+        raise ValueError(f"{ids_file}: problem-ID sha256 {got} != configured {ids_sha256}")
+    examples, vid = load_verified_examples(data_dir, "val", manifest_sha256)
+    by_id = {e.problem_id: e for e in examples}
+    missing = [i for i in ids if i not in by_id]
+    if missing or len(set(ids)) != len(ids):
+        raise ValueError(f"{ids_file}: {len(missing)} IDs not in val (e.g. {missing[:3]}) or duplicate IDs")
+    ident = {**vid.to_dict(), "subset": {"problem_ids_file": str(ids_file), "problem_ids_sha256": ids_sha256},
+             "selected_problem_ids_sha256": got, "n_selected": len(ids)}
+    return [by_id[i] for i in ids], ident
+
+
 def prepare_trainer(cfg: dict, device: torch.device, run_dir: Path, resume: str | None) -> Trainer:
     run_dir = Path(run_dir)
     d = cfg["data"]
@@ -43,7 +62,10 @@ def prepare_trainer(cfg: dict, device: torch.device, run_dir: Path, resume: str 
         print(f"verify-data passed ({report['n_examples']} records, {time.perf_counter() - t0:.1f}s)", flush=True)
     ev = cfg["eval"]
     eval_examples, eval_ident = None, None
-    if ev["split"] == "val":
+    if ev["split"] == "val" and ev["problem_ids_file"]:
+        eval_examples, eval_ident = load_problem_id_subset(d["dir"], d["manifest_sha256"], ev["problem_ids_file"],
+                                                           ev["problem_ids_sha256"])
+    elif ev["split"] == "val":
         eval_examples, vid = load_verified_examples(d["dir"], "val", d["manifest_sha256"],
                                                     {"n": ev["n_examples"], "seed": ev["subset_seed"]})
         eval_ident = vid.to_dict()

@@ -65,7 +65,38 @@ Each item lists its status; the evidence is in `docs/verification.md`, "Mileston
 
 Open after milestone 3 (not blocking milestone 4 software): whether to extend the
 warmup beyond 1,000 updates before freezing the generator for the draft bank (the
-loss was still falling), and any A100 measurement.
+loss was still falling), and any A100 measurement. Both are addressed by the
+continuation below.
+
+## Warmup continuation on TACC Lonestar6 (D-033): PREPARED 2026-11-17, NOT RUN
+
+Runbook: `docs/warmup_continuation.md`. Done locally:
+1. Trainer support. DONE, TESTED LOCALLY:
+   - a training-update timer with a fixed origin and a cumulative cap;
+   - a deadline and a graceful signal stop;
+   - persisted early-stopping state on a pinned validation subset;
+   - protected checkpoints;
+   - per-setting monitoring records.
+2. CUDA precision and environment reporting (TF32 off). IMPLEMENTED; CUDA untested.
+3. `configs/train/warmup_continuation.yaml`, the monitoring subset, and the Linux lock
+   file. DONE.
+4. `scripts/tacc/`: transfer staging and verification, environment build, Ranch
+   backup, environment check, CUDA pilot, continuation, final evaluation, status and
+   resume guard. Helpers TESTED LOCALLY; shell and Slurm scripts syntax- and
+   lint-checked only.
+5. Preflight of checkpoint 1000, the CUDA reference fixture, and a real-CLI CPU smoke
+   run. DONE (Mac).
+
+Pending, in order, on Lonestar6 (the user submits):
+1. transfer;
+2. Ranch backup;
+3. environment;
+4. `env_check`;
+5. pilot (gates in the runbook §8);
+6. continuation from the original checkpoint 1000;
+7. final stage-2 comparison of 1000 vs the selected checkpoint.
+
+Then the user chooses the milestone-4 generator checkpoint, recorded in a new entry.
 
 ## Milestone 4: immutable draft bank and signal diagnostics
 
@@ -108,8 +139,9 @@ from raw records.
 1. Read this file, then `docs/decisions.md`, `docs/verification.md`, and
    `docs/source_audit.md` §5 (open questions).
 2. Recreate the environments and assets with the README "Setup" commands, then run
-   `.venv/bin/python -m pytest -q`. All 216 tests should pass. The 8
+   `.venv/bin/python -m pytest -q`. All 225 tests should pass. The 8
    `real_backbone` tests need the weights and the 68 `tokenizer` tests need the
    tokenizer files. Inside a sandbox that hides MPS, the MPS case is not collected
-   (215).
-3. Start at the first unchecked item of the next milestone.
+   (224).
+3. Start at the first pending item: currently the TACC warmup continuation
+   (`docs/warmup_continuation.md` §4), then milestone 4.

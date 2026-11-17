@@ -708,3 +708,141 @@ trainable; sampler sees the reference length.
 - Draft-bank collection, correction training, and any experimental arm (milestone 4
   onward).
 - No human review.
+
+## Warmup-continuation preparation (2026-11-17, Mac only)
+
+Preparation for continuing the common warmup on Lonestar6 (D-033,
+`docs/warmup_continuation.md`). Every check below ran on the local M2 Max. **Nothing
+has run on TACC**: transfer, environment build, environment check, CUDA pilot, Ranch
+backup, continuation and final evaluation are all PENDING, and no CUDA number exists.
+
+### Software status
+
+| Component | Status |
+| --- | --- |
+| D-033 trainer rules: training-update timer and cap, deadline/signal stop, persisted early-stopping state, protected checkpoints, monitoring subset by ID list, per-setting evaluation records | TESTED LOCALLY (tiny backbone); CLI path smoke-tested on the real backbone on CPU |
+| CUDA precision settings and CUDA memory/environment reporting (`env.py`) | IMPLEMENTED; CUDA untested |
+| `scripts/tacc/` Python helpers (preflight, fixture, expected batches, preflight comparison, status/resume guard, pilot report, calibration comparison) | TESTED LOCALLY on real files where noted below |
+| `scripts/tacc/` shell and Slurm scripts | syntax and `shellcheck` only; not run (they refuse to run off Lonestar6) |
+
+### Tests and mutation checks
+
+| Command | Result |
+| --- | --- |
+| `.venv/bin/python -m pytest -q` (outside the sandbox) | **225 passed** (216 before); 224 inside the sandbox (no MPS case) |
+| `pytest --co -m "not real_backbone and not tokenizer"` | 149 tests |
+| `tests/test_continuation.py` | 7 tests: monitoring-score weighting; patience 3 with a tie keeping the earlier checkpoint; selection state and timer surviving resume (re-basing and changed settings refused); time cap and deadline; protected checkpoints in local and durable directories; evaluation leaves training RNG streams and mode unchanged; config validation |
+| `tests/test_tacc_scripts.py` | 2 tests: the resume guard on real tiny-backbone D-033 checkpoints (origin reuse, rollback to an older checkpoint, resuming a finished run, `--best` before finishing, and a corrupted file are all refused; `--best` returns the strictly best scheduled checkpoint), and the pilot report's gates and estimate arithmetic |
+| `scripts/mutation_check_m3.py` | 12/12 mutants still caught |
+| `scripts/mutation_check_d033.py` (new) | **7/7 caught**: ties counted as improvement; resume resets the timer; resume resets the early-stopping state; evaluation time charged to the training timer; monitoring score pooled instead of equal-weighted; deadline ignored; best checkpoint not protected |
+
+One defect was found by the new tests and fixed: resuming into a run directory that did
+not exist yet failed, because `Trainer.resume` wrote its event before the directory was
+created. This is exactly the TACC case of a fresh `$SCRATCH` run directory resuming the
+transferred checkpoint.
+
+### Preflight of checkpoint 1000 (`scripts/tacc/preflight_checkpoint.py`, CPU, read-only)
+
+Output: `runs/preflight/ckpt-0001000-mac.json` (sha256 `a09068e3…af5c`), **14/14 checks
+passed**, 7 s.
+- **File hashes.** Match `COMPLETE.json`.
+- **Compatibility.** The resume-compatibility hash of `warmup_continuation.yaml`
+  equals the checkpoint's (`d192b416…a6f6`); immutable-key differences: none; changed
+  mutable sections: `checkpoint`, `eval`, `limits`, `run_name`.
+- **Identities.** Data identity recomputed from the files; base-model files match.
+- **Counters.** Update 1000, batches 1000, examples 32,000, zero-mask skips 0.
+  `train_wall_seconds` is 5,688.05 in the checkpoint and 5,789.88 in `summary.json`
+  (the summary adds the final evaluation and save).
+- **Sampler.** Epoch 2, position 14,000 of 18,000.
+- **Model.** 290 fp32 tensors, 494,032,768 parameters (`lm_head` tied, not stored);
+  L2 distance from pretrained 17.3775, norm 1178.458.
+- **Optimizer.** AdamW state for all 290 tensors at step 1000; fp32 state
+  3,952,263,304 bytes.
+- **Scheduler and learning rate.** `last_epoch` 1000; LR 3e-5 for every update to
+  10,000 (no decay horizon).
+- **RNG streams.** `data_order` and `train_mask` advanced; `eval` still at its seed.
+  The global RNG state comes from MPS; on another device it is not restored (unused
+  by training).
+- **Predicted batches.** Batches 1001–1010 predicted from the CPU streams (mask
+  digests `4696908e…`, …, `8b1442d0…`; masked tokens 339, 266, 297, 327, 299, 292,
+  330, 374, 280, 256).
+- **Gradient diagnostics** from `metrics.jsonl`:
+  - pre-clip norm median 5.15 (p95 7.53, range 3.03–50.6); last 100 updates median
+    4.71;
+  - clip factor median 0.194;
+  - clipped on 100% of updates.
+
+  Not measured: post-clip per-tensor norms, per-step update norms, AdamW
+  second-moment statistics, per-layer gradient norms.
+- **MPS memory** from metrics: live 6.05 GB; driver 28.7–30.6 GB.
+
+**Validation of the batch prediction.** The same preflight run on `ckpt-0000900`
+(`--next-batches 100`) predicted every recorded batch 901–1000 of the warmup exactly:
+indices, problem IDs, mask digests, mask rates, shapes and LR
+(`check_expected_batches.py`: PASS).
+
+### CUDA reference fixture (`scripts/tacc/cuda_fixture.py make`, CPU fp32)
+
+Output: `runs/reference/cuda_pilot_fixture.{pt,json}` (sha256 `b5dc7081…3e74`,
+`0f3c4855…fd24`), made from checkpoint 1000. Tolerances were fixed in the script
+before any CUDA result, and are stored with the fixture.
+- **Batch.** Shape [18, 134], 180 masked tokens, mask digest `419e0322…`.
+- **Values.** Loss 0.6131474, pre-clip gradient norm 6.29932, LR 3e-5.
+- **Generation margins.** Smallest committed top-1/top-2 margins in the greedy T = L
+  generations range from 0.007 (programs 2/2) to 8.67 (arithmetic 2/1).
+- **Self-check.** `check --device cpu` against itself passed with zero differences.
+
+### Real-CLI smoke run (CPU, disposable APFS clone of checkpoint 1000)
+
+`dlmc train --config configs/train/warmup_continuation.yaml --device cpu --resume
+runs/cli_smoke/ckpt-0001000-clone --max-updates 1004`, with monitoring disabled by
+`--set`, then SIGUSR1 sent after the first update log line.
+- **Resume.** `cross_device: true`, `accelerator_rng_restored: false`.
+- **Updates.** 1001 (loss 0.534) and 1002 (0.625). The signal arrived during update
+  1002, which completed.
+- **Stop.** `stop_reason signal_SIGUSR1`. `ckpt-0001002` verified, with timers
+  `origin_update 1000` and `train_update_seconds 20.4`. No unscheduled evaluation.
+- **Batches.** 1001–1002 matched the Mac preflight's predictions exactly.
+- **Original.** The checkpoint's hashes were unchanged afterwards (re-hashed for the
+  transfer table).
+
+The bash wait/trap pattern of `continuation.slurm` was checked separately with a
+stand-in process: the batch shell forwards SIGUSR1, and the trainer's exit status is
+propagated with and without the signal.
+
+### Helper scripts on real files
+
+| Check | Result |
+| --- | --- |
+| `compare_preflight.py` Mac preflight vs itself / vs the `ckpt-0000900` preflight | PASS / FAIL with 23 differences (as intended) |
+| `compare_calibrations.py` stage-2 run vs itself, with the MPS cross-device option | reproduces the stage-2 aggregates (T = L: 0.429) and all cell counts |
+| `continuation_status.py --check-resume` on the real `ckpt-0001000` / on `ckpt-0000900` | accepted / refused (not a continuation checkpoint) |
+| `bash -n` on every `scripts/tacc/*.sh`, `*.slurm` | no syntax errors |
+| `shellcheck` | only unused-variable notices for variables used by the sourcing scripts, and bare `cd` covered by `set -e` |
+
+### Environment pinning
+
+`scripts/tacc/compile_lock.sh` (uv 0.13.9 on the Mac, `--python-platform
+x86_64-manylinux_2_28 --python-version 3.14 --generate-hashes`) produced
+`requirements-tacc-lock.txt`:
+- torch 2.15.0, triton 3.9.0, CUDA 13.2 runtime packages and cuDNN 9.26.0.51;
+- shared packages at the Mac versions (numpy 2.5.5, safetensors 0.8.0, tokenizers
+  0.23.3, PyYAML 6.0.3, huggingface-hub 2.4.0, pytest 9.2.0).
+
+PyPI publishes torch 2.15.0 for Linux only as the CUDA 13.2 build (driver ≥ R580).
+The uv 0.13.9 Linux tarball sha256 (`a7fbaff2…71d5`) was taken from its GitHub
+release. Lonestar6 rules were checked against the TACC user guides (Lonestar6,
+Ranch):
+- queue table and charge rates, with the 0.25 h minimum;
+- no `--gres`;
+- virtual environments on `$SCRATCH` and its 10-day purge;
+- `$WORK` neither purged nor backed up;
+- `$ARCHIVER`/`$ARCHIVE` and `scp` for Ranch.
+
+### Not run
+
+- Anything on TACC: no transfer, environment, CUDA run, pilot, backup, continuation or
+  final evaluation. All CUDA numbers in the runbook are provisional estimates.
+- The transfer staging itself (`stage_transfer.sh`) runs after the commit, because it
+  needs a clean tree; its outcome is reported outside this file.
+- No test-split evaluation, draft-bank collection or correction training. No human review.

@@ -48,9 +48,9 @@ MUTANTS = [
 ]
 
 
-def main() -> int:
+def main(mutants=MUTANTS, tests=TESTS) -> int:
     results = []
-    for desc, rel, old, new in MUTANTS:
+    for desc, rel, old, new in mutants:
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp) / "src"
             shutil.copytree(ROOT / "src", src)
@@ -64,7 +64,7 @@ def main() -> int:
             check = subprocess.run([sys.executable, "-c", "import diffusion_correction as d; print(d.__file__)"],
                                    env=env, capture_output=True, text=True, cwd=ROOT)
             assert str(src) in check.stdout, f"mutant copy not imported: {check.stdout}"
-            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", *TESTS], env=env, cwd=ROOT,
+            r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-x", *tests], env=env, cwd=ROOT,
                                capture_output=True, text=True)
             caught = r.returncode != 0
             failing = [ln for ln in r.stdout.splitlines() if ln.startswith("FAILED")][:1]

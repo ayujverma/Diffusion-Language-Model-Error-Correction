@@ -1,0 +1,12 @@
+# Lonestar6 (linux x86_64, CPython 3.14.7) environment inputs. Every package that also
+# exists in the Mac environment is held to its requirements-lock.txt version; the
+# Linux-only CUDA runtime packages are pinned by torch 2.15.0 itself (CUDA 13.2).
+# Regenerate requirements-tacc-lock.txt with scripts/tacc/compile_lock.sh.
+-c ../../requirements-lock.txt
+torch==2.15.0
+numpy
+safetensors
+huggingface_hub
+tokenizers
+pyyaml
+pytest

@@ -87,6 +87,10 @@ def run_benchmark(cfg: dict, device: torch.device, *, method: str, batch_size: i
             if mem_after_first is None:
                 mem_after_first = rec["memory"]
             steps.append(rec)
+        opt_bytes = sum(t.numel() * t.element_size() for st in tr.optimizer.state.values()
+                        for t in st.values() if torch.is_tensor(t))
+        opt_device = sorted({str(t.device) for st in tr.optimizer.state.values() for t in st.values()
+                             if torch.is_tensor(t) and t.numel() > 1})
         timed = steps[warmup_steps:]
     sec = [r["step_seconds"] for r in timed]
     e2e = [r["end_to_end_seconds"] for r in timed]
@@ -116,6 +120,7 @@ def run_benchmark(cfg: dict, device: torch.device, *, method: str, batch_size: i
         "mps_driver_allocated_gb_max_over_timed": max(drv) if drv else None,
         "analytic_gb": {"parameters": round(total * bpe / 1e9, 3), "gradients": round(trainable * bpe / 1e9, 3),
                         "adamw_state": round(2 * trainable * bpe / 1e9, 3)},
+        "optimizer_state_allocated_gb": round(opt_bytes / 1e9, 3), "optimizer_state_devices": opt_device,
         "timing_boundary": "step_seconds: synchronized forward+loss+backward+clip+AdamW+scheduler; "
                            "end_to_end adds collation and CPU mask sampling",
     }

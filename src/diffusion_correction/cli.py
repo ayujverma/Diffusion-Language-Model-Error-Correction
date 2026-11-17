@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -262,11 +263,24 @@ def cmd_train(args: argparse.Namespace) -> int:
         overrides["limits.max_wall_seconds"] = args.max_wall_seconds
     if args.durable_dir is not None:
         overrides["checkpoint.durable_dir"] = args.durable_dir
+    if args.max_train_seconds is not None:
+        overrides["limits.max_train_seconds"] = args.max_train_seconds
+    if args.stop_at_unix is not None:
+        overrides["limits.stop_at_unix"] = args.stop_at_unix
     cfg = load_config(args.config, overrides)
     device = resolve_device(args.device)
     run_dir = Path(args.run_dir or f"runs/train/{cfg['run_name']}")
     trainer = prepare_trainer(cfg, device, run_dir, args.resume)
     print(json.dumps(trainer.describe(), indent=2))
+    print(json.dumps({"environment": environment_report(device)}, default=str), flush=True)
+
+    def request_stop(signum, _frame):
+        # Finish the current update (and any evaluation in progress), then checkpoint and exit.
+        trainer.stop_signal = signal.Signals(signum).name
+        print(f"received {trainer.stop_signal}; stopping after the current update", flush=True)
+
+    for sig in (signal.SIGUSR1, signal.SIGTERM):
+        signal.signal(sig, request_stop)
     summary = trainer.train()
     print(json.dumps(summary, indent=2, default=str))
     return 0
@@ -428,6 +442,10 @@ def main(argv: list[str] | None = None) -> int:
     tr.add_argument("--seed", type=int, default=None)
     tr.add_argument("--max-updates", type=int, default=None)
     tr.add_argument("--max-wall-seconds", type=float, default=None)
+    tr.add_argument("--max-train-seconds", type=float, default=None,
+                    help="cap on training-update time since limits.train_seconds_origin_update (D-033)")
+    tr.add_argument("--stop-at-unix", type=float, default=None,
+                    help="graceful exit: start no update at or after this UNIX time, then checkpoint")
     tr.add_argument("--durable-dir", default=None, help="copy completed checkpoints here (e.g. Google Drive)")
     tr.add_argument("--set", action="append", help="override a config key, e.g. --set optimizer.lr=1e-5")
     tr.set_defaults(func=cmd_train)

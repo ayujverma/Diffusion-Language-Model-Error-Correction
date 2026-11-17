@@ -518,3 +518,66 @@ and "Validation calibration".
   Without this, varying padded shapes made the cache grow until the machine swapped.
   The rule changes timing and memory, not losses: identical losses at matching
   updates were observed with and without it.
+
+**D-033 (2026-11-17) Warmup continuation on Lonestar6: limits, stopping rule, CUDA
+precision, checkpoint retention. Recorded before any CUDA run and before any
+continuation result.** Runbook: `docs/warmup_continuation.md`.
+- **User decision on D-032: option (b).** Continue `warmup-pilot-v1` from
+  `ckpt-0001000` (model sha256 `f48abe45…5a6a`, optimizer `ae55b394…99af`) on TACC
+  Lonestar6, `gpu-a100-small` (one A100 40 GB). The backup goes to Ranch. The
+  continuation reloads the original checkpoint, never pilot-updated weights.
+  Everything in the resume-compatibility hash is unchanged
+  (`configs/train/warmup_continuation.yaml` vs `warmup_pilot.yaml`): data, D-028
+  masking, D-030 optimizer, schedule, batch 32, fp32 full fine-tuning, clipping and
+  seed. The constant learning rate stays 3e-5.
+- **Limits.** At most 10,000 total updates (9,000 more). At most 7,200 s of
+  *training-update time*, counted from update 1000 and cumulative across resumes. It
+  covers drawing indices through the update and its bookkeeping, but not evaluation,
+  checkpointing or start-up. The timer's origin is stored in every checkpoint and
+  cannot be re-based. A Slurm limit is not the cap: each job's limit is larger, and
+  the trainer stops itself before it (`--stop-at-unix`, SIGUSR1 backstop), saving a
+  checkpoint. One attempt per submission: no automatic retries or requeueing.
+  `max_wall_seconds` is null for the continuation.
+- **Early stopping (an engineering rule, not an established optimum).** The 500-ID
+  monitoring subset is fixed (`configs/eval/monitor_val_stage2_first50.json`, sha256
+  `324d5ca8…3dc94`): the first 50 val problems of each stage-2 calibration setting.
+  - *Schedule.* Scheduled evaluations run at update 1000 (the CUDA baseline) and every
+    1,000 total updates.
+  - *Score.* Final-answer accuracy at T = L, averaged over settings within each
+    family, then over families.
+  - *Patience.* Training stops after 3 consecutive scheduled evaluations without a
+    strictly higher score; ties keep the earlier checkpoint.
+  - *Persistence.* The best score and update, the counter, the history and the subset
+    identity persist in checkpoints. Changing any of them on resume is refused.
+  - *Eligibility.* Only scheduled evaluations are eligible. A stop between scheduled
+    points gets one unscheduled evaluation for reporting.
+- **Retention.** Checkpoints every 500 updates, with a verified copy in `$WORK`.
+  Pruning (`keep_last 2`) never removes the current checkpoint, 1500, any multiple
+  of 1000, or the best. Checkpoint 1000 stays read-only in `$WORK/dlmc/transfer`
+  and on Ranch.
+- **CUDA precision.** fp32 with TF32 disabled for matmul and cuDNN, and
+  `float32_matmul_precision("highest")`. This keeps the arithmetic fp32 as in D-030.
+  The SDPA backend is torch's default and is recorded in the environment report. The
+  MPS cache release (D-032) is a no-op on CUDA and CPU. Exact MPS-to-CUDA numerical
+  agreement is not expected. Data order, masks and learning rates come from CPU
+  streams and must match exactly.
+- **Environment.** CPython 3.14.7 and torch 2.15.0 (Linux build for CUDA 13.2,
+  driver ≥ R580). Every package is pinned with hashes in
+  `scripts/tacc/requirements-tacc-lock.txt`; shared packages are at the Mac versions.
+  Any other torch build (e.g. 2.14.1+cu126 for an older driver) needs a new entry.
+- **Pilot gates.** These are declared before any CUDA result (tolerances in
+  `scripts/tacc/cuda_fixture.py` and the runbook §8):
+  - the CPU-reference fixture check (forward, gradients, one AdamW step, greedy
+    generation);
+  - CUDA save/reload/resume against an uninterrupted CUDA run, at the Gate C
+    tolerances;
+  - reproduction of the Mac-predicted batches 1001–1010;
+  - a baseline monitoring evaluation;
+  - checkpoint 1000 unchanged.
+
+  A failed gate is recorded; it is not retried or loosened without a new entry.
+- **Final comparison.** The full D-031 stage-2 protocol on CUDA, for checkpoint 1000
+  and the selected checkpoint (validation only).
+- **Still open.** Which checkpoint becomes the milestone-4 generator: the user
+  decides after the comparison, and a new entry records it. The bank-collection
+  budget and the final primary budget stay unselected. Test splits stay untouched.

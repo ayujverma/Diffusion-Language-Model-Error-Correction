@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import resource
 import subprocess
@@ -20,7 +21,9 @@ def resolve_device(name: str) -> torch.device:
         raise RuntimeError("--device cuda requested but CUDA is not available")
     if name == "mps" and not torch.backends.mps.is_available():
         raise RuntimeError("--device mps requested but MPS is not available")
-    return torch.device(name)
+    device = torch.device(name)
+    configure_precision(device)
+    return device
 
 
 def synchronize(device: torch.device) -> None:
@@ -31,11 +34,35 @@ def synchronize(device: torch.device) -> None:
 
 
 def release_cached_memory(device: torch.device) -> None:
-    """Return cached allocator blocks to the driver (no effect on live tensors)."""
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
-    elif device.type == "mps":
+    """MPS-only workaround (D-032): return cached allocator blocks to the driver.
+
+    With varying padded shapes the MPS cache grew until macOS swapped. The CUDA caching
+    allocator reuses blocks, so on CUDA (and CPU) this does nothing.
+    """
+    if device.type == "mps":
         torch.mps.empty_cache()
+
+
+def configure_precision(device: torch.device) -> dict:
+    """Pin float32 matmul/convolution precision on CUDA (no TF32, D-033) and return the settings."""
+    if device.type == "cuda":
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+        torch.set_float32_matmul_precision("highest")
+    return precision_report(device)
+
+
+def precision_report(device: torch.device) -> dict:
+    out = {"float32_matmul_precision": torch.get_float32_matmul_precision()}
+    if device.type == "cuda":
+        out.update(cuda_matmul_allow_tf32=torch.backends.cuda.matmul.allow_tf32,
+                   cudnn_allow_tf32=torch.backends.cudnn.allow_tf32,
+                   cuda_matmul_allow_fp16_reduced_precision=torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
+                   sdpa_enabled={"flash": torch.backends.cuda.flash_sdp_enabled(),
+                                 "mem_efficient": torch.backends.cuda.mem_efficient_sdp_enabled(),
+                                 "math": torch.backends.cuda.math_sdp_enabled(),
+                                 "cudnn": torch.backends.cuda.cudnn_sdp_enabled()})
+    return out
 
 
 def memory_snapshot(device: torch.device) -> dict:
@@ -44,8 +71,13 @@ def memory_snapshot(device: torch.device) -> dict:
     rss_bytes = rss if sys.platform == "darwin" else rss * 1024
     out = {"process_peak_rss_gb": round(rss_bytes / 1e9, 3)}
     if device.type == "cuda":
+        free, total = torch.cuda.mem_get_info()
+        out["cuda_allocated_gb"] = round(torch.cuda.memory_allocated() / 1e9, 3)
         out["cuda_peak_allocated_gb"] = round(torch.cuda.max_memory_allocated() / 1e9, 3)
-        out["cuda_total_gb"] = round(torch.cuda.get_device_properties(0).total_memory / 1e9, 3)
+        out["cuda_reserved_gb"] = round(torch.cuda.memory_reserved() / 1e9, 3)
+        out["cuda_peak_reserved_gb"] = round(torch.cuda.max_memory_reserved() / 1e9, 3)
+        out["cuda_device_used_gb"] = round((total - free) / 1e9, 3)  # all processes and contexts
+        out["cuda_total_gb"] = round(total / 1e9, 3)
     elif device.type == "mps":
         out["mps_current_allocated_gb"] = round(torch.mps.current_allocated_memory() / 1e9, 3)
         out["mps_driver_allocated_gb"] = round(torch.mps.driver_allocated_memory() / 1e9, 3)
@@ -79,5 +111,12 @@ def environment_report(device: torch.device) -> dict:
         "mps_available": torch.backends.mps.is_available(), "git": git_state(),
     }
     if device.type == "cuda":
-        report["cuda_device"] = torch.cuda.get_device_name(0)
+        props = torch.cuda.get_device_properties(device)
+        report.update(cuda_device=torch.cuda.get_device_name(device), cuda_runtime=torch.version.cuda,
+                      cudnn=torch.backends.cudnn.version(), cuda_capability=f"{props.major}.{props.minor}",
+                      cuda_total_memory_gb=round(props.total_memory / 1e9, 3),
+                      cuda_device_count=torch.cuda.device_count(), cuda_arch_list=torch.cuda.get_arch_list())
+    report["precision"] = precision_report(device)
+    report["slurm_job_id"] = os.environ.get("SLURM_JOB_ID")
+    report["hostname"] = platform.node()
     return report

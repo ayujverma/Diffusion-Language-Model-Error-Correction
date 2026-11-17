@@ -1,0 +1,48 @@
+# Continuation of the common warmup `warmup-pilot-v1` from ckpt-0001000 (D-033).
+# Every key outside limits/checkpoint/eval/log_every/memory_every/release_cache_every/
+# run_name is IDENTICAL to configs/train/warmup_pilot.yaml, so the resume-compatibility
+# hash matches the checkpoint and model, data, masking, optimizer, LR schedule, batch
+# size, precision, trainable parameters and clipping are unchanged. Only the resume-
+# mutable sections differ. Engineering stopping rule, not an established optimum.
+run_name: warmup-pilot-v1-cont
+seed: 20261117
+backbone: open-dcoder
+model_dir: runs/hf/open-dcoder-0.5B
+data:
+  dir: runs/data/pilot-seed20261116
+  split: train
+  manifest_sha256: 990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536
+  verify: true
+method: full
+dtype: float32
+autocast: null
+batch_size: 32
+optimizer: {name: adamw, lr: 3.0e-5, betas: [0.9, 0.999], eps: 1.0e-8, weight_decay: 0.01}
+scheduler: {name: linear_warmup_constant, warmup_updates: 20}
+clip_grad_norm: 1.0
+limits:
+  max_updates: 10000                # TOTAL updates: at most 9,000 after ckpt-0001000
+  max_wall_seconds: null            # superseded for the continuation by max_train_seconds (D-033)
+  max_train_seconds: 7200           # two hours of training-update time, cumulative across resumes
+  train_seconds_origin_update: 1000 # the timer starts at ckpt-0001000 and can never be re-based
+  stop_at_unix: null                # set per job by scripts/tacc/continuation.slurm (graceful exit)
+checkpoint:
+  every_updates: 500
+  keep_last: 2
+  durable_dir: null                 # set by the job script to the persistent $WORK copy
+  protect_updates: [1500]
+  protect_every: 1000               # every scheduled-evaluation checkpoint is retained
+eval:
+  every_updates: 1000               # scheduled evaluations at 2000, 3000, ...; 1000 is the device baseline
+  at_start: false
+  split: val
+  problem_ids_file: configs/eval/monitor_val_stage2_first50.json
+  problem_ids_sha256: 324d5ca8eb01b3fd47f087472197adb6f687965a3bca6fec6e35c0b113dc3d94
+  batch_size: 50                    # same generation batch as the D-031 stage-2 calibration
+  generate_budgets: ["L"]
+  early_stop: null
+  selection: {budget: "L", patience: 3}
+  write_records: true
+log_every: 10
+memory_every: 10
+release_cache_every: 1              # MPS-only operation; does nothing on CUDA

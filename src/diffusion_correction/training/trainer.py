@@ -50,6 +50,12 @@ def mask_digest(masked: torch.Tensor) -> str:
     return hashlib.sha256(str(tuple(m.shape)).encode() + m.numpy().tobytes()).hexdigest()[:16]
 
 
+def lr_factor(completed: int, warmup_updates: int) -> float:
+    """linear_warmup_constant: factor for the update about to be taken, given `completed` updates.
+    It has no decay horizon, so it does not depend on max_updates."""
+    return min(1.0, (completed + 1) / warmup_updates) if warmup_updates > 0 else 1.0
+
+
 def package_versions() -> dict:
     import numpy
     import safetensors
@@ -85,9 +91,7 @@ class Trainer:
         if sc["name"] != "linear_warmup_constant":
             raise ValueError("only linear_warmup_constant is implemented")
         warm = max(int(sc["warmup_updates"]), 0)
-        # Factor for the update about to be taken, given `completed` updates so far.
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(
-            self.optimizer, lambda completed: min(1.0, (completed + 1) / warm) if warm > 0 else 1.0)
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lambda completed: lr_factor(completed, warm))
         self.gens = {name: make_generator(cfg["seed"], name) for name in STREAMS}
         self.sampler = EpochSampler(len(self.examples), self.gens["data_order"])
         self.update = 0
@@ -98,6 +102,11 @@ class Trainer:
         self.last_eval: dict | None = None
         self.resumed_from: str | None = None
         self.autocast = cfg["autocast"]
+        # D-033 timers. train_update_seconds runs from `origin_update`; eval/checkpoint time is kept apart.
+        self.timers = {"origin_update": 0, "train_update_seconds": 0.0, "eval_seconds": 0.0,
+                       "checkpoint_seconds": 0.0}
+        self.selection: dict | None = None   # D-033 validation early-stopping state
+        self.stop_signal: str | None = None  # set by a signal handler; checked between updates
 
     # ------------------------------------------------------------------ bookkeeping
     @property
@@ -178,9 +187,12 @@ class Trainer:
 
     # ------------------------------------------------------------------ evaluation
     @torch.no_grad()
-    def evaluate(self) -> dict:
+    def evaluate(self, scheduled: bool | None = None) -> dict:
         """Masked loss with a freshly seeded eval stream (identical masks every time; training
-        streams untouched), plus optional monotone-sampler accuracy."""
+        streams untouched), plus optional monotone-sampler accuracy.
+
+        ``scheduled`` marks D-033 scheduled evaluations (eligible for selection) versus
+        unscheduled ones (end of run between scheduled points; reporting only)."""
         exs = self.eval_examples if self.eval_examples is not None else self.examples
         g = make_generator(self.cfg["seed"], "eval")
         bs = self.cfg["eval"]["batch_size"]
@@ -205,21 +217,35 @@ class Trainer:
             n += int(ce.numel())
         result = {"update": self.update, "n_examples": len(exs), "n_masked_tokens": n,
                   "masked_loss": total / n if n else None,
-                  "eval_set": "train_subset" if self.eval_examples is None else self.cfg["eval"]["split"]}
+                  "eval_set": "train_subset" if self.eval_examples is None else self.cfg["eval"]["split"],
+                  "eval_identity": self.eval_identity, "device": str(self.device)}
+        if scheduled is not None:
+            result["scheduled"] = scheduled
         budgets = self.cfg["eval"]["generate_budgets"]
         if budgets:
-            from ..evaluation.generation import generate, score
+            from ..evaluation.generation import by_setting, generate, score, selection_score
 
             if self.tf is None or self.allowed is None:
                 raise ValueError("generation eval needs the tokenized format and allowed-token mask")
-            result["generation"] = {}
+            result["generation"], result["generation_by_setting"] = {}, {}
+            sel = self.cfg["eval"]["selection"]
             for b in budgets:
                 run = generate(self.adapter, exs, b, self.tf.fmt.slot_len, self.allowed, batch_size=bs)
-                _, agg = score(exs, run, self.tf)
+                records, agg = score(exs, run, self.tf)
                 result["generation"][str(b)] = {k: agg[k] for k in (
                     "final_answer_accuracy", "value_accuracy", "token_accuracy", "trace_accuracy",
                     "malformed_example_rate", "malformed_slot_reasons", "model_calls_per_example",
-                    "value_errors_per_response", "model_seconds")}
+                    "value_errors_per_response", "model_seconds", "n_examples", "model_calls_total")}
+                result["generation_by_setting"][str(b)] = by_setting(records)
+                if sel is not None and str(b) == str(sel["budget"]):
+                    result["selection_score"] = selection_score(records)
+                if self.cfg["eval"]["write_records"]:
+                    rdir = self.run_dir / "eval_records"
+                    rdir.mkdir(parents=True, exist_ok=True)
+                    tag = "" if scheduled is not False else "-unscheduled"
+                    with open(rdir / f"update-{self.update:07d}{tag}-T{b}.jsonl", "w") as f:
+                        for r in records:
+                            f.write(json.dumps(r, sort_keys=True) + "\n")
         synchronize(self.device)
         result["eval_seconds"] = round(time.perf_counter() - t0, 2)
         # Full-vocabulary eval logits leave large cached blocks that training would
@@ -239,6 +265,68 @@ class Trainer:
             return False
         return gen["trace_accuracy"] >= es["trace_accuracy"] and ev["masked_loss"] <= es["max_masked_loss"]
 
+    # ------------------------------------------------------------------ D-033 validation early stopping
+    def _selection_settings(self) -> dict:
+        ev = self.cfg["eval"]
+        return {"budget": str(ev["selection"]["budget"]), "patience": int(ev["selection"]["patience"]),
+                "every_updates": int(ev["every_updates"]), "eval_identity": self.eval_identity}
+
+    def _checkpoint_path(self, update: int) -> str:
+        if self.resumed_from and update == self.timers["origin_update"] and Path(self.resumed_from).name == \
+                f"ckpt-{update:07d}":
+            return self.resumed_from
+        return str(self.ckpt_root / f"ckpt-{update:07d}")
+
+    def _init_selection(self) -> None:
+        if self.cfg["eval"]["selection"] is None:
+            return
+        settings = self._selection_settings()
+        if self.selection is None:
+            self.selection = {**settings, "best_score": None, "best_update": None, "best_checkpoint": None,
+                              "evals_without_improvement": 0, "history": []}
+        elif {k: self.selection.get(k) for k in settings} != settings:
+            raise ValueError("eval.selection settings or the monitoring subset differ from the checkpoint's "
+                             f"selection state ({ {k: self.selection.get(k) for k in settings} } vs {settings}); "
+                             "the early-stopping rule cannot be reset or changed on resume")
+
+    def _record_selection(self, ev: dict) -> None:
+        """Strictly higher score -> new best (ties keep the earlier checkpoint); else count one more
+        scheduled evaluation without improvement."""
+        s = self.selection
+        score = ev["selection_score"]["score"]
+        improved = s["best_score"] is None or score > s["best_score"]
+        if improved:
+            s.update(best_score=score, best_update=self.update, best_checkpoint=self._checkpoint_path(self.update),
+                     evals_without_improvement=0)
+        else:
+            s["evals_without_improvement"] += 1
+        s["history"].append({"update": self.update, "score": score, "improved": improved,
+                             "evals_without_improvement": s["evals_without_improvement"],
+                             "masked_loss": ev["masked_loss"],
+                             "per_family": ev["selection_score"]["per_family"]})
+        write_text = json.dumps(s, indent=2, default=str) + "\n"
+        (self.run_dir / "selection.json").write_text(write_text)
+        self._event("selection", update=self.update, score=score, improved=improved,
+                    best_update=s["best_update"], evals_without_improvement=s["evals_without_improvement"])
+
+    def _patience_exhausted(self) -> bool:
+        s = self.selection
+        return s is not None and s["evals_without_improvement"] >= s["patience"]
+
+    def _pending_scheduled_eval(self) -> bool:
+        s = self.selection
+        every = int(self.cfg["eval"]["every_updates"] or 0)
+        return (s is not None and every and self.update % every == 0
+                and self.update not in {h["update"] for h in s["history"]})
+
+    def _timed_eval(self, scheduled: bool | None) -> dict:
+        t0 = time.perf_counter()
+        ev = self.evaluate(scheduled=scheduled)
+        self.timers["eval_seconds"] += time.perf_counter() - t0
+        if scheduled and self.selection is not None:
+            self._record_selection(ev)
+        return ev
+
     # ------------------------------------------------------------------ checkpoints
     def _state(self) -> dict:
         return {
@@ -252,7 +340,19 @@ class Trainer:
             "model_file": FULL_MODEL_FILE if self.cfg["method"] == "full" else LORA_FILE,
             "git": git_state(), "versions": package_versions(), "device": str(self.device),
             "last_eval": self.last_eval, "resumed_from": self.resumed_from, "training": self.describe(),
+            "timers": self.timers, "selection": self.selection,
         }
+
+    def _protected_names(self, root: Path, current: str) -> set[str]:
+        ck = self.cfg["checkpoint"]
+        names = {current} | {f"ckpt-{int(u):07d}" for u in ck["protect_updates"] or []}
+        every = int(ck["protect_every"] or 0)
+        if every:
+            names |= {p.name for p in Path(root).glob("ckpt-*")
+                      if not p.name.endswith(".tmp") and int(p.name[5:]) % every == 0}
+        if self.selection and self.selection["best_update"] is not None:
+            names.add(f"ckpt-{self.selection['best_update']:07d}")
+        return names
 
     def save(self) -> Path:
         t0 = time.perf_counter()
@@ -271,17 +371,25 @@ class Trainer:
         self._event("checkpoint_saved", path=str(path), model_sha256=info["files"][fname],
                     seconds=round(time.perf_counter() - t0, 2))
         durable = self.cfg["checkpoint"]["durable_dir"]
+        keep = self.cfg["checkpoint"]["keep_last"]
         if durable:
-            rec = copy_to_durable(path, Path(durable) / self.cfg["run_name"] / "checkpoints")
+            droot = Path(durable) / self.cfg["run_name"] / "checkpoints"
+            rec = copy_to_durable(path, droot)
             self._event("durable_copy", **rec)
-        removed = prune_checkpoints(self.ckpt_root, self.cfg["checkpoint"]["keep_last"], protect={path.name})
+            if rec["ok"]:
+                gone = prune_checkpoints(droot, keep, protect=self._protected_names(droot, path.name))
+                if gone:
+                    self._event("pruned_durable_checkpoints", removed=gone)
+        removed = prune_checkpoints(self.ckpt_root, keep, protect=self._protected_names(self.ckpt_root, path.name))
         if removed:
             self._event("pruned_local_checkpoints", removed=removed)
+        self.timers["checkpoint_seconds"] += time.perf_counter() - t0
         return path
 
     def resume(self, path: Path) -> None:
         path = Path(path)
         complete = verify_checkpoint(path)
+        self.run_dir.mkdir(parents=True, exist_ok=True)  # resuming into a new run directory
         state = json.loads((path / "state.json").read_text())
         if state["compat_hash"] != compat_hash(self.cfg):
             old, new = state["config"], self.cfg
@@ -317,6 +425,9 @@ class Trainer:
         self.last_eval = state.get("last_eval")
         self.last_checkpoint = path.name
         self.resumed_from = str(path)
+        # Checkpoints written before D-033 carry no timers: the training-update timer starts here.
+        self.timers = dict(state.get("timers") or {**self.timers, "origin_update": self.update})
+        self.selection = state.get("selection")
         cross_device = state["device"].split(":")[0] != self.device.type
         # Records past the checkpoint describe work that is being redone; keep them aside for audit.
         metrics = self.run_dir / "metrics.jsonl"
@@ -334,26 +445,61 @@ class Trainer:
                     cross_device=cross_device, accelerator_rng_restored=accel_restored)
 
     # ------------------------------------------------------------------ loop
+    def _stop_reason(self, max_updates: int, max_wall, wall0: float, t_start: float) -> str | None:
+        limits = self.cfg["limits"]
+        if self.update >= max_updates:
+            return "max_updates"
+        if self._patience_exhausted():
+            return "early_stop_patience"
+        if max_wall is not None and wall0 + (time.perf_counter() - t_start) >= max_wall:
+            return "max_wall_seconds"
+        if limits["max_train_seconds"] is not None and \
+                self.timers["train_update_seconds"] >= limits["max_train_seconds"]:
+            return "max_train_seconds"
+        if limits["stop_at_unix"] is not None and time.time() >= limits["stop_at_unix"]:
+            return "deadline"
+        if self.stop_signal:
+            return f"signal_{self.stop_signal}"
+        return None
+
     def train(self) -> dict:
+        """Run until a limit is reached.
+
+        D-033 timer: ``timers.train_update_seconds`` accumulates, per loop iteration, the
+        wall time from drawing the batch indices through the update and its per-update
+        bookkeeping (metrics record, memory snapshot, MPS cache release, logging), for
+        skipped zero-mask batches too. Scheduled/unscheduled evaluations and checkpoint
+        saves (with durable copies and pruning) are timed separately. ``max_train_seconds``
+        is checked before each update, so it is exceeded by at most one update.
+        """
         self.run_dir.mkdir(parents=True, exist_ok=True)
         limits = self.cfg["limits"]
         max_updates, max_wall = int(limits["max_updates"]), limits["max_wall_seconds"]
+        origin = limits["train_seconds_origin_update"]
+        if origin is not None and int(origin) != self.timers["origin_update"]:
+            raise ValueError(f"limits.train_seconds_origin_update={origin} but this state's training-update timer "
+                             f"started at update {self.timers['origin_update']}; the cap cannot be re-based")
+        self._init_selection()
         ck_every = int(self.cfg["checkpoint"]["every_updates"] or 0)
         ev_every = int(self.cfg["eval"]["every_updates"] or 0)
         mem_every = int(self.cfg["memory_every"] or 0)
         rc_every = int(self.cfg["release_cache_every"] or 0)
         wall0, t_start = self.train_wall_seconds, time.perf_counter()
-        self._event("train_start", describe=self.describe(), max_updates=max_updates, max_wall_seconds=max_wall)
+        self._event("train_start", describe=self.describe(), max_updates=max_updates, max_wall_seconds=max_wall,
+                    limits=limits, timers=self.timers)
         if self.cfg["eval"]["at_start"] and self.update == 0 and self.last_eval is None:
-            print(f"eval @ 0: {json.dumps(self.evaluate())}", flush=True)
+            print(f"eval @ 0: {json.dumps(self._timed_eval(scheduled=True if self.selection else None))}",
+                  flush=True)
+        elif self._pending_scheduled_eval():
+            # e.g. the device baseline at the resumed checkpoint, or an evaluation cut off by a deadline
+            print(f"eval @ {self.update} (scheduled, pending at start): "
+                  f"{json.dumps(self._timed_eval(scheduled=True))}", flush=True)
         stop = None
         while True:
-            if self.update >= max_updates:
-                stop = "max_updates"
+            stop = self._stop_reason(max_updates, max_wall, wall0, t_start)
+            if stop:
                 break
-            if max_wall is not None and wall0 + (time.perf_counter() - t_start) >= max_wall:
-                stop = "max_wall_seconds"
-                break
+            t_iter = time.perf_counter()
             rec = self.train_step(self.sampler.next_indices(self.cfg["batch_size"]))
             self.train_wall_seconds = wall0 + (time.perf_counter() - t_start)
             rec["train_wall_seconds"] = round(self.train_wall_seconds, 2)
@@ -363,24 +509,32 @@ class Trainer:
                 # Varying padded lengths make the MPS cache grow far past live memory
                 # (78 GB driver vs 6 GB live after 50 updates) and the machine swaps.
                 release_cached_memory(self.device)
-            _jsonl(self.run_dir / "metrics.jsonl", rec)
-            if rec.get("event") == "skipped_zero_mask":
-                continue
-            if self.cfg["log_every"] and self.update % self.cfg["log_every"] == 0:
+            skipped = rec.get("event") == "skipped_zero_mask"
+            if not skipped and self.cfg["log_every"] and self.update % self.cfg["log_every"] == 0:
                 print(f"update {self.update} loss {rec['loss']:.4f} lr {rec['lr']:.2e} gn {rec['grad_norm']:.2f} "
                       f"{rec['step_seconds']:.2f}s", flush=True)
+            rec["train_update_seconds"] = round(self.timers["train_update_seconds"] + time.perf_counter() - t_iter, 3)
+            _jsonl(self.run_dir / "metrics.jsonl", rec)
+            self.timers["train_update_seconds"] += time.perf_counter() - t_iter
+            if skipped:
+                continue
             if ev_every and self.update % ev_every == 0:
-                ev = self.evaluate()
+                ev = self._timed_eval(scheduled=True if self.selection is not None else None)
                 print(f"eval @ {self.update}: {json.dumps(ev)}", flush=True)
                 if self._early_stop(ev):
                     stop = "early_stop"
                     self.train_wall_seconds = wall0 + (time.perf_counter() - t_start)
                     break
+                if self._patience_exhausted():
+                    stop = "early_stop_patience"
+                    break
             if ck_every and self.update % ck_every == 0:
                 self.save()
             self.train_wall_seconds = wall0 + (time.perf_counter() - t_start)
-        if self.last_eval is None or self.last_eval["update"] != self.update:
-            self.evaluate()
+        graceful = stop == "deadline" or (stop or "").startswith("signal_")
+        if not graceful and (self.last_eval is None or self.last_eval["update"] != self.update):
+            # Between scheduled points: reported, never eligible for selection (D-033).
+            self._timed_eval(scheduled=False if self.selection is not None else None)
         self.train_wall_seconds = wall0 + (time.perf_counter() - t_start)
         if self.last_checkpoint != f"ckpt-{self.update:07d}":
             self.save()
@@ -388,9 +542,10 @@ class Trainer:
                    "examples_consumed": self.sampler.examples_consumed, "skipped_zero_mask": self.skipped_zero_mask,
                    "train_wall_seconds": round(self.train_wall_seconds, 2), "last_checkpoint": self.last_checkpoint,
                    "last_eval": self.last_eval, "describe": self.describe(), "data_identity": self.data_identity,
-                   "resumed_from": self.resumed_from}
+                   "resumed_from": self.resumed_from, "timers": self.timers, "selection": self.selection,
+                   "loop_wall_seconds_this_process": round(time.perf_counter() - t_start, 2)}
         (self.run_dir / "summary.json").write_text(json.dumps(summary, indent=2, default=str) + "\n")
-        self._event("train_end", stop_reason=stop)
+        self._event("train_end", stop_reason=stop, timers=self.timers)
         return summary
 
 

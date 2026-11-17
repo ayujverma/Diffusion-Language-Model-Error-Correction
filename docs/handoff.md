@@ -4,8 +4,11 @@ As of 2026-11-17. **Milestones 1, 2 and 3 are complete.** Milestone 3 (masked wa
 and difficulty calibration) was completed on the local M2 Max: its software is
 TESTED ON REAL BACKBONE, Gate C passed, the bounded common warmup ran to its cap, and
 the validation-only calibration is done. The common warmup **reached its 1,000-update
-cap while still improving**. Whether to extend it before milestone 4 freezes a
-generator is an open user decision (D-032). Milestone 4 has **not** been started.
+cap while still improving**. The user chose to continue it on TACC Lonestar6 (D-033).
+Local preparation for that is complete: code, scripts, transfer manifest and runbook
+`docs/warmup_continuation.md`. **Nothing has run on TACC yet.** The transfer, Ranch
+backup, environment check, CUDA pilot, continuation and final comparison are pending,
+and the user submits them. Milestone 4 has **not** been started.
 No experimental arm has been trained, and no test split has been evaluated. This
 file should be enough to continue. The detailed records are in `docs/decisions.md`,
 `docs/verification.md`, `docs/source_audit.md`, `docs/implementation_plan.md` and
@@ -86,6 +89,7 @@ stay optional.
 | Milestone-1 advisor follow-ups | DONE (D-016, D-017) |
 | 2: tasks, format, checker, splits, inspect-example | DONE and closed as software (D-018 to D-021, D-024). Pilot grid still labelled provisional (D-019, D-032) |
 | 3: masked warmup and difficulty calibration | **DONE** (D-028 to D-032). Software TESTED ON REAL BACKBONE; Gate C passed; warmup ran to its 1,000-update cap (not converged); validation calibration done; pilot dataset kept |
+| Warmup continuation on Lonestar6 (D-033) | **PREPARED, NOT RUN.** Code and scripts TESTED LOCALLY; every TACC step pending (`docs/warmup_continuation.md`) |
 | 4 to 8 | not started |
 
 **Milestone-3 completed items:**
@@ -101,17 +105,32 @@ stay optional.
 - `paper/methods.md` draft (no results).
 
 **Milestone-3 incomplete or deferred items:**
-- The warmup is not converged. Whether to extend it is the user's decision, D-032;
-  the command is in §6.
+- The warmup is not converged. The user chose to continue it (D-033); the continuation
+  is prepared but has not run.
 - The final primary budget is not chosen (deferred to milestone 4/5 by D-031).
 - The Colab launcher has not been run; no A100 measurement exists.
 - No human review.
 
-## 4. Next milestone (4): immutable draft bank and signal diagnostics
+## 4. Next steps
 
-Full list in `docs/implementation_plan.md`. First, get the user's decision on the
-generator checkpoint (D-032: use `warmup-pilot-v1/ckpt-0001000` as is, or extend the
-warmup). Record it in a new entry together with the model sha256. Then:
+**First: the warmup continuation (D-033).** Follow `docs/warmup_continuation.md` §4 in
+order. The user authenticates and submits every job:
+1. stage and copy the transfer from the Mac;
+2. verify and install on ls6;
+3. back up checkpoint 1000 to Ranch;
+4. build the environment;
+5. run `env_check.slurm`;
+6. run `pilot.slurm`;
+7. run `continuation.slurm` from the original checkpoint 1000;
+8. run `final_eval.slurm`.
+
+Each step's pass condition is in the runbook (§10 lists those required before the
+continuation). Record CUDA results in `verification.md` only after the job outputs
+exist. After the final comparison, the user decides which checkpoint becomes the
+milestone-4 generator, and a new decisions entry records it with its sha256.
+
+**Then milestone 4: immutable draft bank and signal diagnostics.** Full list in
+`docs/implementation_plan.md`. Do not start it before that generator decision. Then:
 1. Freeze a generator copy. Collect drafts with the D-029 sampler through its
    observer hook (`sampling.monotone.monotone_unmask(..., observer=...)`): per
    committed token, the commit call, the mask fraction, and float32 log c and log q
@@ -156,10 +175,12 @@ calibration table (`verification.md`) is the input to that choice.
 | `evaluation/benchmark.py`, `precision.py`, `compare.py` | Timing/memory pilot; bf16 vs. fp32 check; run-trajectory comparison |
 | `configs/train/*.yaml` | `warmup_pilot.yaml` (common warmup), `overfit32.yaml` (Gate C), `resume_check.yaml` (Gate C) |
 | `notebooks/colab_runner.ipynb` | Thin CUDA launcher for the same commands (not run) |
-| `scripts/gatec_inspect.py`, `select_calibration_settings.py`, `mutation_check_m3.py` | Gate C inspection; D-031 stage-2 selection; milestone-3 mutation check |
+| `scripts/gatec_inspect.py`, `select_calibration_settings.py`, `mutation_check_m3.py`, `mutation_check_d033.py` | Gate C inspection; D-031 stage-2 selection; milestone-3 and D-033 mutation checks |
+| `configs/train/warmup_continuation.yaml`, `configs/eval/monitor_val_stage2_first50.json` | D-033 continuation config (resume-compatible with `warmup_pilot.yaml`); the 500-problem monitoring subset |
+| `scripts/tacc/` | Lonestar6 runbook scripts (`docs/warmup_continuation.md`): `tacc_env.sh` (shared settings and checks), `stage_transfer.sh` (Mac), `install_transfer.sh`, `setup_env.sh`, `backup_to_ranch.sh`, `env_check.slurm`, `pilot.slurm`, `continuation.slurm`, `final_eval.slurm`; Python helpers `preflight_checkpoint.py`, `cuda_fixture.py`, `check_expected_batches.py`, `compare_preflight.py`, `continuation_status.py`, `pilot_report.py`, `compare_calibrations.py`, `make_monitor_subset.py`; Linux lock `requirements-tacc-lock.txt` (`compile_lock.sh`) |
 | `paper/methods.md` | Methods draft from verified code |
 
-Tests (216 in total with MPS available; 215 inside the sandbox):
+Tests (225 in total with MPS available; 224 inside the sandbox):
 
 | File | Tests | Notes |
 | --- | --- | --- |
@@ -172,6 +193,7 @@ Tests (216 in total with MPS available; 215 inside the sandbox):
 | `test_data_structure.py` | 34 | hand-specified signatures, structure rejections, identity |
 | `test_data_splits.py` | 20 | includes 9 tamper tests with re-hashed manifests |
 | `test_masking.py`, `test_sampler.py`, `test_trainer.py`, `test_sampler_real.py` | 36 | milestone 3; `test_sampler_real.py` is `real_backbone` (8 such tests in total) |
+| `test_continuation.py`, `test_tacc_scripts.py` | 9 | D-033 trainer rules; resume guard and pilot report |
 
 68 tests carry the `tokenizer` marker.
 
@@ -184,8 +206,8 @@ hides MPS and blocks the Hub, so use full permissions for those commands.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # pinned: requirements-lock.txt; no transformers (D-008)
 .venv/bin/dlmc download-backbone                              # -> runs/hf/open-dcoder-0.5B, sha256-verified
-.venv/bin/python -m pytest -q                                 # expect 216 passed (215 inside the sandbox: no MPS case)
-.venv/bin/python -m pytest -q -m "not real_backbone and not tokenizer"   # 140, no assets needed
+.venv/bin/python -m pytest -q                                 # expect 225 passed (224 inside the sandbox: no MPS case)
+.venv/bin/python -m pytest -q -m "not real_backbone and not tokenizer"   # 149, no assets needed
 .venv/bin/dlmc doctor --backbone open-dcoder --device mps     # ~10 GB of memory
 .venv/bin/dlmc generate-data --config configs/data/pilot.yaml  # -> runs/data/pilot-seed20261116 (verifies itself)
 .venv/bin/dlmc verify-data --data-dir runs/data/pilot-seed20261116
@@ -214,10 +236,8 @@ H=990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536
 .venv/bin/python scripts/gatec_inspect.py --checkpoint runs/train/gatec-overfit32/checkpoints/ckpt-0000250 --device mps
 # common warmup (as run); resume after any interruption with the same command plus --resume auto
 .venv/bin/dlmc train --config configs/train/warmup_pilot.yaml --device mps --run-dir runs/train/warmup-pilot-v1 [--resume auto]
-# OPTIONAL, needs the user's go-ahead (D-032): continue the same warmup to e.g. 2000 updates;
-# limits are resume-mutable, so optimizer, data order and masks continue exactly
-.venv/bin/dlmc train --config configs/train/warmup_pilot.yaml --device mps --run-dir runs/train/warmup-pilot-v1 \
-    --resume auto --max-updates 2000 --max-wall-seconds 14400
+# The continuation (D-033) runs on Lonestar6 with configs/train/warmup_continuation.yaml through
+# scripts/tacc/continuation.slurm; see docs/warmup_continuation.md, not a local command.
 # calibration (validation only)
 .venv/bin/dlmc calibrate --checkpoint runs/train/warmup-pilot-v1/checkpoints/ckpt-0001000 --data-dir runs/data/pilot-seed20261116 \
     --manifest-sha256 $H --split val --settings all --n-per-setting 32 --budgets 1,2,4,8,L --out runs/calibration/screen-warmup1000
@@ -240,9 +260,18 @@ T = L is the slowest evaluation: about 1.5 s per call for a batch of 50 with L =
 
 Details and tables are in `docs/verification.md`.
 
-**Tests.** `pytest`: 216 passed outside the sandbox. Inside it, 215 pass, because
+**Tests.** `pytest`: 225 passed outside the sandbox. Inside it, 224 pass, because
 MPS is hidden and the MPS case is not collected. The milestone-3 mutation check
-catches 12/12 mutants.
+catches 12/12 mutants and the D-033 check 7/7.
+
+**Continuation preparation (details in `verification.md`, "Warmup-continuation
+preparation"; all on the Mac):**
+- The preflight of `ckpt-0001000` passed 14/14 checks; its predicted batches were
+  validated on `ckpt-0000900` (all 100 recorded batches reproduced).
+- The CPU reference fixture for the CUDA pilot was made and self-checked.
+- A real-CLI CPU smoke run resumed a clone of checkpoint 1000, reproduced batches
+  1001–1002 exactly, and stopped gracefully on SIGUSR1.
+- No CUDA result exists.
 
 **Milestone 3 (details and tables in `verification.md`, "Milestone 3"):**
 - Precision on MPS: bf16 autocast passes the tolerances but is slower; pure bf16
@@ -333,7 +362,11 @@ above.
 | `runs/calibration/stage2-warmup1000.swap-attempt` | stopped stage-2 attempt (identical accuracies; inflated timings) |
 
 There is no backup of these runs: no durable directory was configured locally, and
-only the Gate C test copy in `runs/durable/` exists. Together they take about 66 GB
+only the Gate C test copy in `runs/durable/` exists. That copy is not a backup of the
+warmup checkpoint. A Ranch backup of `ckpt-0001000` is step 4 of the runbook and has
+not been made. `runs/preflight/`, `runs/reference/cuda_pilot_fixture.*`,
+`runs/cli_smoke/` (a smoke run's clone and its 5.9 GB `ckpt-0001002`, disposable) and
+`runs/tacc_transfer/` (the staged manifest and bundle) are continuation preparation. Together they take about 66 GB
 (`runs/train` 55 GB, `runs/durable` 11 GB).
 The resume-check and feasibility runs can be deleted once they are no longer needed
 as evidence.
@@ -352,8 +385,14 @@ as evidence.
 ## 8. Risks, unresolved choices, and checks not run
 
 **Risks:**
-- **The warmup is not converged** (D-032). A generator frozen now would be weaker
-  than a longer warmup would give. This is a user decision before milestone 4.
+- **The warmup is not converged** (D-032). It is being continued on Lonestar6
+  (D-033). The CUDA trajectory will not match MPS bit for bit. Only data order,
+  masks, learning rates and restored state must match exactly, and the pilot gates
+  check them.
+- **TACC prerequisites are unknown.** The TACC username, allocation, SU balance, Ranch
+  access, the GPU driver on `gpu-a100-small` (torch 2.15.0 needs ≥ R580) and
+  compute-node network access are all unconfirmed. The scripts check each and stop if
+  it fails.
 - **The hardest pilot settings are near 0%** (length 6 with 3 digits: ≤ 2.5% at every
   budget), and wrong responses there contain about 4.8 wrong values. Those settings
   may give the correction arms little to work with. The pilot grid stays provisional
@@ -369,8 +408,8 @@ as evidence.
   limitation).
 
 **Unresolved choices:**
-- D-032: extend the warmup or not; then the bank-collection budget and the primary
-  budget.
+- After the D-033 continuation: which checkpoint becomes the milestone-4 generator;
+  then the bank-collection budget and the primary budget.
 - D-011: β = 0.5 and the bin edges.
 - D-012: λ and μ.
 - Q-1: which liger version trained the base checkpoint.
@@ -384,7 +423,8 @@ by D-029.)
 **Checks not run:**
 - Gate D (observer log c / log q same-pass, reference-independence of the bank).
 - ProSeCo/SCOPE stop-gradient fixtures.
-- Any CUDA/A100 run, including the Colab launcher.
+- Any CUDA/A100 run, including the Colab launcher and every TACC step of the D-033
+  runbook (transfer, backup, environment check, pilot, continuation, final evaluation).
 - Any test-split evaluation, draft collection or experimental arm.
 - No human review of anything.
 
@@ -404,4 +444,7 @@ by D-029.)
   reference and doctor outputs.
 - Milestone 3 is committed on `main` on top of `35b3282` as two commits: the code,
   configs, notebook, scripts and tests; then the documentation.
+- The D-033 continuation preparation is one commit on top of `52991f4`: code,
+  configs, `scripts/tacc/`, tests and documentation. The transfer bundle is built
+  from that commit.
 - Run `git log --oneline 8e00216..HEAD` for the current hashes.

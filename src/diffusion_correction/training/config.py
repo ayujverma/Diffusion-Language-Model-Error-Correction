@@ -39,17 +39,31 @@ DEFAULTS: dict = {
     "scheduler": {"name": "linear_warmup_constant", "warmup_updates": 20},
     "clip_grad_norm": 1.0,
     "mask": {"t_min": 1.0 / 500, "t_max": 1.0 - 1.0 / 500},
-    "limits": {"max_updates": 100, "max_wall_seconds": None},
-    "checkpoint": {"every_updates": 250, "keep_last": 2, "durable_dir": None},
+    "limits": {
+        "max_updates": 100,
+        "max_wall_seconds": None,       # cumulative loop wall time incl. evaluation and checkpoints
+        "max_train_seconds": None,      # cumulative training-update time since train_seconds_origin_update
+        "train_seconds_origin_update": None,  # update at which the training-update timer starts (D-033)
+        "stop_at_unix": None,           # graceful exit: no new update starts at or after this time
+    },
+    "checkpoint": {
+        "every_updates": 250, "keep_last": 2, "durable_dir": None,
+        "protect_updates": [],          # never pruned (local or durable)
+        "protect_every": 0,             # checkpoints at multiples of this are never pruned
+    },
     "eval": {
         "every_updates": 0,             # 0 = only at the end
         "at_start": False,              # also evaluate before the first update (pretrained baseline)
         "split": "val",                 # val | train_subset (the training examples themselves)
         "n_examples": 256,
         "subset_seed": 0,
+        "problem_ids_file": None,       # JSON {"problem_ids": [...]}: fixed val subset instead of n_examples
+        "problem_ids_sha256": None,     # required with problem_ids_file
         "batch_size": 32,
         "generate_budgets": [],         # e.g. ["L"]: monotone-sampler accuracy at these budgets
         "early_stop": None,             # {"budget": "L", "trace_accuracy": 1.0, "max_masked_loss": 0.05}
+        "selection": None,              # {"budget": "L", "patience": 3}: D-033 validation early stopping
+        "write_records": False,         # per-example generation records per evaluation
     },
     "log_every": 1,
     "memory_every": 50,
@@ -88,6 +102,23 @@ def resolve_config(raw: dict) -> dict:
         raise ValueError("data.manifest_sha256 is required for real-backbone runs")
     if cfg["batch_size"] < 1:
         raise ValueError("batch_size must be >= 1")
+    lim, ev = cfg["limits"], cfg["eval"]
+    if lim["max_train_seconds"] is not None and lim["train_seconds_origin_update"] is None:
+        raise ValueError("limits.max_train_seconds needs limits.train_seconds_origin_update")
+    if ev["problem_ids_file"] and not ev["problem_ids_sha256"]:
+        raise ValueError("eval.problem_ids_file needs eval.problem_ids_sha256")
+    sel = ev["selection"]
+    if sel is not None:
+        if not ev["every_updates"]:
+            raise ValueError("eval.selection needs eval.every_updates > 0 (scheduled evaluations)")
+        if str(sel.get("budget")) not in [str(b) for b in ev["generate_budgets"]]:
+            raise ValueError("eval.selection.budget must be one of eval.generate_budgets")
+        if int(sel.get("patience", 0)) < 1:
+            raise ValueError("eval.selection.patience must be >= 1")
+        ck_every = int(cfg["checkpoint"]["every_updates"] or 0)
+        if not ck_every or int(ev["every_updates"]) % ck_every:
+            raise ValueError("eval.selection needs checkpoint.every_updates dividing eval.every_updates, so every "
+                             "scheduled evaluation has a checkpoint")
     return cfg
 
 

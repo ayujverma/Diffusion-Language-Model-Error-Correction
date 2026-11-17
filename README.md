@@ -4,14 +4,17 @@ Research code for *Does Generation-Time Confidence Improve Diffusion Self-Correc
 a controlled study of how to weight model-generated errors when fine-tuning a
 masked diffusion LM (Open-dCoder-0.5B) to correct its own drafts.
 
-**Status: milestones 1 and 2 of 8 complete (software only).**
+**Status: milestones 1 to 3 of 8 complete.**
 - Milestone 1: source audit, backbone adapter, loss and weighting code, gradient
   checks against upstream.
 - Milestone 2: arithmetic and program tasks, the fixed-slot response format, the
   checker, splits with hashed manifests, and `inspect-example`.
+- Milestone 3: masked warmup trainer, monotone sampler, Gate C, a bounded common
+  warmup, and validation-only difficulty calibration.
 
-There is no training loop, draft bank or experiment yet, and no model accuracy has
-been measured. See `docs/implementation_plan.md`.
+A continuation of the common warmup on TACC Lonestar6 is prepared but has not run
+(`docs/warmup_continuation.md`). There is no draft bank or experimental arm yet;
+only calibration accuracies exist. See `docs/implementation_plan.md`.
 
 | Doc | Contents |
 | --- | --- |
@@ -22,6 +25,7 @@ been measured. See `docs/implementation_plan.md`.
 | `docs/verification.md` | commands run, results, checks not run |
 | `docs/data_format.md` | task grammar, response format, record schema, checker, splits |
 | `docs/ai_usage.md` | log of AI assistance |
+| `docs/warmup_continuation.md` | runbook for the warmup continuation on TACC Lonestar6 (D-033) |
 | `docs/inputs/` | project proposal PDF and the approved build prompt (implementation and experiment protocol) |
 
 ## Setup
@@ -35,7 +39,7 @@ python3 -m venv .venv
 ## Checks
 
 ```bash
-.venv/bin/python -m pytest -q                                   # all 216 tests (weight/tokenizer tests skip without assets)
+.venv/bin/python -m pytest -q                                   # all 225 tests (weight/tokenizer tests skip without assets)
 .venv/bin/python -m pytest -q -m "not real_backbone and not tokenizer"   # no downloaded assets needed
 .venv/bin/dlmc doctor --backbone tiny --device cpu --dtype float64
 .venv/bin/dlmc doctor --backbone open-dcoder --device cpu       # real forward/loss/backward/AdamW step
@@ -99,6 +103,15 @@ gradient norm), `evals.jsonl`, `events.jsonl` and atomic checkpoints under
 `checkpoints/`. `--durable-dir` copies each completed checkpoint and re-hashes it;
 the copy is logged as successful only after that check. `notebooks/colab_runner.ipynb`
 is a thin launcher that runs the same commands on a CUDA runtime.
+
+### Warmup continuation on TACC Lonestar6 (D-033)
+
+`configs/train/warmup_continuation.yaml` continues `warmup-pilot-v1` from
+`ckpt-0001000`. It allows at most 10,000 total updates and two hours of
+training-update time (cumulative across resumes), and stops early on a pinned
+validation subset. `scripts/tacc/` holds the transfer, environment, pilot,
+continuation and evaluation scripts. `docs/warmup_continuation.md` gives the order,
+the pass conditions and the commands. Nothing in it runs models on a login node.
 
 ### Regenerating the upstream reference logits (optional)
 

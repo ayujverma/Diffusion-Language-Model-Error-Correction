@@ -116,3 +116,37 @@ What the AI did:
 
 Human checks:
 - None. No human has reviewed the milestone-3 code, the runs or the documents.
+
+## 2026-11-17: Warmup-continuation preparation for TACC Lonestar6 (Cursor agent, Claude model)
+
+What the AI did:
+- Asked the user four questions: the system (Lonestar6), the account details (not
+  known yet), the backup target (Ranch) and the path layout (the default). Recorded
+  the continuation policy as D-033 before any CUDA run.
+- Extended the existing trainer and CLI; no second trainer. Added:
+  - the training-update timer and cumulative cap;
+  - the deadline and SIGUSR1/SIGTERM graceful stop;
+  - persisted early stopping on a pinned validation subset;
+  - checkpoint protection;
+  - per-setting evaluation records;
+  - CUDA precision settings and reporting.
+
+  Also wrote the continuation config, the monitoring subset, the Linux lock file,
+  `scripts/tacc/` (Python helpers, shell and Slurm scripts), two test files and a
+  D-033 mutation check, and `docs/warmup_continuation.md`.
+- Ran, on the Mac only:
+  - the tests and both mutation checks;
+  - the preflight of checkpoint 1000 and its validation on `ckpt-0000900`;
+  - fixture creation and self-check;
+  - a CPU smoke run of the real CLI from a clone of checkpoint 1000;
+  - the helper scripts on real files;
+  - `bash -n` and `shellcheck`.
+
+  It checked Lonestar6 and Ranch rules against TACC's user guides. Following the
+  Lonestar6 guide, it moved the virtual environment from the user-chosen `$WORK` to
+  `$SCRATCH`.
+- Submitted no job and ran nothing on TACC. Did not start milestone 4. Wrote the
+  documentation updates and committed at the user's request.
+
+Human checks:
+- None. No human has reviewed the D-033 code, scripts or documents.
