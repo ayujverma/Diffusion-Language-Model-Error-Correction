@@ -30,4 +30,5 @@ where = ["src"]
 testpaths = ["tests"]
 markers = [
     "real_backbone: requires the pinned Open-dCoder-0.5B weights under runs/hf (skipped otherwise)",
+    "tokenizer: requires the pinned tokenizer files under runs/hf (skipped otherwise; no weights needed)",
 ]

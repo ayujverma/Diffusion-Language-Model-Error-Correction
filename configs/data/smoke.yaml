@@ -1,0 +1,23 @@
+# Tiny dataset for software checks (seconds to generate). Not a scientific benchmark.
+name: smoke
+seed: 0
+value_bound: 9999          # |v| <= 9999 for every value -> slot = sign + 4 digits
+allow_negative: true
+mul_range: [2, 9]          # '*' only by a small integer in this range
+operand_digits: [1, 2, 3]  # +/- constants (and the first arithmetic constant) have exactly this many digits
+families:
+  arithmetic:
+    lengths: [2, 4, 6]             # operations per chain (train/val/test_id/test_unseen)
+    long_lengths: [8, 10, 12]      # test_long only
+    heldout_bigrams: [["-", "*"]]  # subtraction immediately followed by multiplication
+  programs:
+    lengths: [2, 4, 6]             # statements per program
+    long_lengths: [8, 10, 12]
+    n_inputs: 2
+    heldout_bigrams: [["mul_const", "sub_var"]]
+per_setting:               # problems per (family, length, operand_digits) setting
+  train: 4
+  val: 2
+  test_id: 2
+  test_long: 2
+  test_unseen: 2

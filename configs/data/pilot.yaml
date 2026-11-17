@@ -1,0 +1,26 @@
+# PROVISIONAL pilot dataset (decision D-019). The lengths, digit settings, bound and
+# sizes are starting points for the milestone-3 validation calibration, which may
+# change them using train/validation results only. Held-out compositions are fixed
+# before any model sees the data; changing them means regenerating every split.
+name: pilot
+seed: 20261116
+value_bound: 9999
+allow_negative: true
+mul_range: [2, 9]
+operand_digits: [1, 2, 3]
+families:
+  arithmetic:
+    lengths: [2, 4, 6]
+    long_lengths: [8, 10, 12]
+    heldout_bigrams: [["-", "*"]]
+  programs:
+    lengths: [2, 4, 6]
+    long_lengths: [8, 10, 12]
+    n_inputs: 2
+    heldout_bigrams: [["mul_const", "sub_var"]]
+per_setting:
+  train: 1000
+  val: 200
+  test_id: 200
+  test_long: 50
+  test_unseen: 100

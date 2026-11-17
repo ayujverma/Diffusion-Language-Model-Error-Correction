@@ -1,7 +1,8 @@
 """Command-line entry point: ``dlmc <command>`` (or ``python -m diffusion_correction.cli``).
 
-Milestone 1 commands: ``doctor`` and ``download-backbone``. Later milestones add
-inspect-example, generate-data, warmup, collect-drafts, and the rest.
+Commands: ``doctor``, ``download-backbone`` (milestone 1); ``generate-data``,
+``verify-data``, ``inspect-example`` (milestone 2). Later milestones add warmup,
+collect-drafts, and the rest.
 """
 
 from __future__ import annotations
@@ -135,6 +136,111 @@ def cmd_download(args: argparse.Namespace) -> int:
     return 0
 
 
+def _task_tokenizer(model_dir: str | None):
+    """Pinned tokenizer (small files sha256-checked) and facts recorded in manifests."""
+    from .models.open_dcoder import DEFAULT_LOCAL_DIR, REPO_ID, REVISION, load_tokenizer, resolve_token_spec, \
+        verify_files
+
+    local = Path(model_dir or DEFAULT_LOCAL_DIR)
+    hashes = verify_files(local, check_weights=False)
+    spec = resolve_token_spec(local)
+    facts = {"repo": REPO_ID, "revision": REVISION, "tokenizer_json_sha256": hashes["tokenizer.json"],
+             "library": "tokenizers", "mask_token_id": spec.mask_token_id, "pad_token_id": spec.pad_token_id,
+             "eos_token_id": spec.eos_token_id}
+    return load_tokenizer(local), spec, facts
+
+
+def cmd_generate_data(args: argparse.Namespace) -> int:
+    import hashlib
+
+    import yaml
+
+    from .data.format import TokenizedFormat
+    from .data.splits import DataConfig, generate_splits, verify_dataset, write_splits
+    from .env import git_state
+
+    raw = yaml.safe_load(Path(args.config).read_text())
+    if args.seed is not None:
+        raw["seed"] = args.seed
+    cfg = DataConfig.from_dict(raw)
+    tok, _, facts = _task_tokenizer(args.model_dir)
+    out = Path(args.out or f"runs/data/{cfg.name}-seed{cfg.seed}")
+    if out.exists() and any(out.iterdir()) and not args.overwrite:
+        raise SystemExit(f"{out} exists; pass --overwrite to replace it")
+    t0 = time.perf_counter()
+    splits = generate_splits(cfg, tok)
+    tf = TokenizedFormat.from_tokenizer(tok, cfg.response_format())
+    written = write_splits(out, cfg, splits, facts, tf)
+    gen_s = time.perf_counter() - t0
+    report = verify_dataset(out, tok)
+    prov = {"command": "generate-data", "config_file": str(args.config),
+            "config_file_sha256": hashlib.sha256(Path(args.config).read_bytes()).hexdigest(),
+            "seed": cfg.seed, "time_utc": datetime.now(timezone.utc).isoformat(), "git": git_state(),
+            "manifest_sha256": written["manifest_sha256"], "generation_seconds": round(gen_s, 2),
+            "verification": report}
+    (out / "provenance.json").write_text(json.dumps(prov, indent=2) + "\n")
+    summary = {"out_dir": str(out), "manifest_sha256": written["manifest_sha256"],
+               "splits": {s: {"n": v["n_examples"], "sha256": v["sha256"]} for s, v in written["splits"].items()},
+               "verification": report}
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def cmd_verify_data(args: argparse.Namespace) -> int:
+    import hashlib
+
+    from .data.splits import verify_dataset
+
+    tok, _, _ = _task_tokenizer(args.model_dir)
+    report = verify_dataset(Path(args.data_dir), tok)
+    report["manifest_sha256"] = hashlib.sha256((Path(args.data_dir) / "manifest.json").read_bytes()).hexdigest()
+    print(json.dumps(report, indent=2))
+    return 0
+
+
+def cmd_inspect_example(args: argparse.Namespace) -> int:
+    from .data.format import ResponseFormat, TokenizedFormat
+    from .data.inspect import inspect_example
+    from .data.splits import load_split
+
+    tok, spec, _ = _task_tokenizer(args.model_dir)
+    if args.fixture:
+        from .data.fixtures import get_fixture
+        from .data.tasks import build_example
+
+        prob = get_fixture(args.fixture)
+        tf = TokenizedFormat.from_tokenizer(tok, ResponseFormat(prob.spec.value_bound))
+        ex = build_example(prob, "fixture", tok, tf, heldout=False)
+    else:
+        if not args.data_dir:
+            raise SystemExit("give --fixture NAME or --data-dir DIR [--split S] [--index I | --problem-id ID]")
+        recs = load_split(Path(args.data_dir), args.split)
+        if args.problem_id:
+            matches = [r for r in recs if r.problem_id == args.problem_id]
+            if not matches:
+                raise SystemExit(f"problem {args.problem_id} not in {args.split}")
+            ex = matches[0]
+        else:
+            ex = recs[args.index]
+        tf = TokenizedFormat.from_tokenizer(tok, ResponseFormat(ex.value_bound))
+
+    draft = None
+    if args.draft_values is not None:
+        draft = tf.encode_values([int(v) for v in args.draft_values.split(",")])
+    elif args.draft_text is not None:
+        draft = tok.encode(args.draft_text, add_special_tokens=False).ids
+    elif args.draft_ids is not None:
+        draft = [int(v) for v in args.draft_ids.split(",")]
+    table = inspect_example(ex, tok, tf, spec.pad_token_id, spec.mask_token_id, draft_ids=draft,
+                            n_pad=args.pad, prompt_rows=args.prompt_rows)
+    print(table.render())
+    if args.json:
+        Path(args.json).parent.mkdir(parents=True, exist_ok=True)
+        Path(args.json).write_text(json.dumps(table.to_dict(), indent=2))
+        print(f"\nwrote {args.json}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="dlmc")
     sub = p.add_subparsers(dest="command", required=True)
@@ -156,6 +262,35 @@ def main(argv: list[str] | None = None) -> int:
     dl.add_argument("--model-dir", default=None)
     dl.add_argument("--no-weights", action="store_true")
     dl.set_defaults(func=cmd_download)
+
+    g = sub.add_parser("generate-data", help="generate, write and verify task splits with a hashed manifest")
+    g.add_argument("--config", default="configs/data/smoke.yaml")
+    g.add_argument("--seed", type=int, default=None, help="override the config seed")
+    g.add_argument("--out", default=None, help="default runs/data/<name>-seed<seed>")
+    g.add_argument("--overwrite", action="store_true")
+    g.add_argument("--model-dir", default=None)
+    g.set_defaults(func=cmd_generate_data)
+
+    v = sub.add_parser("verify-data", help="re-check a written dataset (hashes, disjointness, labels, tokens)")
+    v.add_argument("--data-dir", required=True)
+    v.add_argument("--model-dir", default=None)
+    v.set_defaults(func=cmd_verify_data)
+
+    ie = sub.add_parser("inspect-example", help="token/mask/target table for one example")
+    ie.add_argument("--fixture", default=None, help="arith_2_plus_3, arith_17_28, arith_negative_zero, "
+                                                    "program_basic, program_const_minus_var")
+    ie.add_argument("--data-dir", default=None)
+    ie.add_argument("--split", default="train")
+    ie.add_argument("--index", type=int, default=0)
+    ie.add_argument("--problem-id", default=None)
+    ie.add_argument("--draft-values", default=None, help="HYPOTHETICAL draft as comma-separated integers")
+    ie.add_argument("--draft-text", default=None, help="HYPOTHETICAL draft text, tokenized as is")
+    ie.add_argument("--draft-ids", default=None, help="HYPOTHETICAL draft as comma-separated token IDs")
+    ie.add_argument("--pad", type=int, default=2, help="pad positions appended to show the pad mask")
+    ie.add_argument("--prompt-rows", type=int, default=4, help="trailing prompt rows to show (-1 = all)")
+    ie.add_argument("--json", default=None, help="also write the table as JSON to this path")
+    ie.add_argument("--model-dir", default=None)
+    ie.set_defaults(func=cmd_inspect_example)
 
     args = p.parse_args(argv)
     return args.func(args)
