@@ -19,6 +19,13 @@ def test_rank_weights_hand_values():
     torch.testing.assert_close(w, torch.tensor([0.625, 0.875, 1.125, 1.375], dtype=torch.float64))
 
 
+def test_high_conf_hand_values_on_valid_log_probabilities():
+    # Saved log c must be <= 0; c ~ 0.10, 0.30, 0.60, 0.90 gives the same ranks as above.
+    log_c = torch.tensor([-2.3, -1.2, -0.51, -0.105])
+    res = compute_error_weights("high_conf", torch.zeros(4, dtype=torch.long), beta=0.5, log_c=log_c)
+    torch.testing.assert_close(res.weights, torch.tensor([0.625, 0.875, 1.125, 1.375]))
+
+
 def test_singleton_and_fully_tied_groups_get_weight_one():
     groups = torch.tensor([0, 1, 1, 1])
     w = rank_weights(torch.tensor([5.0, 2.0, 2.0, 2.0]), groups, beta=0.5)

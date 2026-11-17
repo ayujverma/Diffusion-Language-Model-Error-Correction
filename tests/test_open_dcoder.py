@@ -58,6 +58,49 @@ def test_matches_upstream_reference_logits(adapter):
     assert torch.equal(ours.argmax(-1), ref["raw_logits"].argmax(-1))
 
 
+def _devices():
+    return ["cpu"] + (["mps"] if torch.backends.mps.is_available() else [])
+
+
+@pytest.mark.parametrize("device", _devices())
+def test_checkpoint_loads_completely_and_embeddings_stay_tied(device):
+    """Every checkpoint tensor lands in the model unchanged; lm_head shares the embedding.
+
+    The checkpoint stores 291 tensors: 290 distinct parameters plus ``lm_head.weight``,
+    an alias that equals ``model.embed_tokens.weight`` (config ``tie_word_embeddings``).
+    RoPE ``inv_freq`` is a non-persistent buffer recomputed from the config, not stored.
+    """
+    from safetensors import safe_open
+
+    ad = load_open_dcoder(DEFAULT_LOCAL_DIR, device=device, dtype=torch.float32, verify_weights_hash=False)
+    model = ad.model
+    params = dict(model.named_parameters())  # de-duplicates tied parameters
+    with safe_open(str(DEFAULT_LOCAL_DIR / "model.safetensors"), "pt") as f:
+        ckpt_keys = set(f.keys())
+        assert len(ckpt_keys) == 291 and "lm_head.weight" in ckpt_keys
+        assert set(params) == ckpt_keys - {"lm_head.weight"}
+        assert set(model.state_dict()) == ckpt_keys  # state_dict lists the alias too
+        assert not any("rotary" in k for k in ckpt_keys)
+        # bf16 -> fp32 is exact, so loaded values must equal the checkpoint bit for bit.
+        for name in ckpt_keys:
+            loaded = model.lm_head.weight if name == "lm_head.weight" else params[name]
+            assert torch.equal(loaded.detach().cpu(), f.get_tensor(name).float()), name
+
+    emb, head = model.model.embed_tokens.weight, model.lm_head.weight
+    assert head is emb and head.data_ptr() == emb.data_ptr() and emb.device.type == device
+    assert sum(p.numel() for p in model.parameters()) == 494_032_768
+
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0)
+    lay = build_layout([[1, 2, 3]], [[ad.tokens.mask_token_id] * 2], ad.tokens.pad_token_id).to(device)
+    before = emb.detach().clone()
+    ad.aligned_logits(lay)[0, 3:].logsumexp(-1).sum().backward()
+    opt.step()
+    assert model.lm_head.weight is model.model.embed_tokens.weight
+    assert not torch.equal(before, model.model.embed_tokens.weight.detach())
+    assert len(opt.param_groups[0]["params"]) == 290  # the tied tensor is optimised once
+    del ad, model, opt
+
+
 def test_real_model_is_bidirectional_and_pad_isolated(adapter):
     tok = load_tokenizer()
     m = adapter.tokens.mask_token_id
