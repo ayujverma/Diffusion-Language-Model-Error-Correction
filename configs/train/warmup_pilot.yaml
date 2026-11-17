@@ -1,0 +1,36 @@
+# Common masked-diffusion warmup on the PROVISIONAL pilot dataset (D-019).
+# Mask policy: D-028. Optimizer/schedule/batch values are ENGINEERING DEFAULTS
+# chosen from the milestone-3 pilot (D-030), not paper-mandated values.
+run_name: warmup-pilot-v1
+seed: 20261117
+backbone: open-dcoder
+model_dir: runs/hf/open-dcoder-0.5B
+data:
+  dir: runs/data/pilot-seed20261116
+  split: train
+  manifest_sha256: 990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536
+  verify: true
+method: full
+dtype: float32
+autocast: null
+batch_size: 32
+optimizer: {name: adamw, lr: 3.0e-5, betas: [0.9, 0.999], eps: 1.0e-8, weight_decay: 0.01}
+scheduler: {name: linear_warmup_constant, warmup_updates: 20}
+clip_grad_norm: 1.0
+limits:
+  max_updates: 1000          # initial run limit, not a claim of adequate adaptation
+  max_wall_seconds: 7200     # two hours, including periodic evaluation and checkpointing
+checkpoint:
+  every_updates: 100
+  keep_last: 2
+  durable_dir: null          # e.g. /content/drive/MyDrive/dlmc on Colab
+eval:
+  every_updates: 250
+  at_start: true
+  split: val
+  n_examples: 144            # 8 per (family, length, digits) setting, stratified
+  subset_seed: 0
+  batch_size: 24             # eval only; full-vocabulary logits dominate eval memory
+  generate_budgets: ["L", 4]
+log_every: 10
+memory_every: 10

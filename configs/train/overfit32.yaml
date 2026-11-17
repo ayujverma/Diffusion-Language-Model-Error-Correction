@@ -1,0 +1,34 @@
+# Gate C wiring check: overfit a fixed stratified set of 32 TRAINING examples.
+# Not a generalization result. Same optimizer/mask policy as the warmup; the
+# pretrained initialisation is reloaded for the warmup (these weights are discarded).
+run_name: gatec-overfit32
+seed: 20261117
+backbone: open-dcoder
+model_dir: runs/hf/open-dcoder-0.5B
+data:
+  dir: runs/data/pilot-seed20261116
+  split: train
+  manifest_sha256: 990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536
+  subset: {n: 32, seed: 0}
+  verify: true
+method: full
+dtype: float32
+batch_size: 16
+optimizer: {name: adamw, lr: 3.0e-5, betas: [0.9, 0.999], eps: 1.0e-8, weight_decay: 0.01}
+scheduler: {name: linear_warmup_constant, warmup_updates: 20}
+clip_grad_norm: 1.0
+limits:
+  max_updates: 500           # explicit Gate C cap
+  max_wall_seconds: 3600
+checkpoint:
+  every_updates: 0           # final checkpoint only
+  keep_last: 1
+eval:
+  every_updates: 50
+  at_start: true
+  split: train_subset        # the 32 training examples themselves
+  batch_size: 32
+  generate_budgets: ["L", 2]
+  early_stop: {budget: "L", trace_accuracy: 1.0, max_masked_loss: 0.05}
+log_every: 10
+memory_every: 100

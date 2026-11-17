@@ -1,8 +1,9 @@
 """Command-line entry point: ``dlmc <command>`` (or ``python -m diffusion_correction.cli``).
 
 Commands: ``doctor``, ``download-backbone`` (milestone 1); ``generate-data``,
-``verify-data``, ``inspect-example`` (milestone 2). Later milestones add warmup,
-collect-drafts, and the rest.
+``verify-data``, ``inspect-example`` (milestone 2); ``train``, ``benchmark``,
+``precision-check``, ``calibrate``, ``compare-runs`` (milestone 3). Later milestones
+add collect-drafts and the rest.
 """
 
 from __future__ import annotations
@@ -241,6 +242,133 @@ def cmd_inspect_example(args: argparse.Namespace) -> int:
     return 0
 
 
+def _yaml_value(text: str):
+    import yaml
+
+    return yaml.safe_load(text)
+
+
+def cmd_train(args: argparse.Namespace) -> int:
+    from .training.config import load_config
+    from .training.run import prepare_trainer
+
+    overrides = dict(kv.split("=", 1) for kv in args.set or [])
+    overrides = {k: _yaml_value(v) for k, v in overrides.items()}
+    if args.seed is not None:
+        overrides["seed"] = args.seed
+    if args.max_updates is not None:
+        overrides["limits.max_updates"] = args.max_updates
+    if args.max_wall_seconds is not None:
+        overrides["limits.max_wall_seconds"] = args.max_wall_seconds
+    if args.durable_dir is not None:
+        overrides["checkpoint.durable_dir"] = args.durable_dir
+    cfg = load_config(args.config, overrides)
+    device = resolve_device(args.device)
+    run_dir = Path(args.run_dir or f"runs/train/{cfg['run_name']}")
+    trainer = prepare_trainer(cfg, device, run_dir, args.resume)
+    print(json.dumps(trainer.describe(), indent=2))
+    summary = trainer.train()
+    print(json.dumps(summary, indent=2, default=str))
+    return 0
+
+
+def cmd_benchmark(args: argparse.Namespace) -> int:
+    from .evaluation.benchmark import run_benchmark
+    from .training.config import load_config
+
+    cfg = load_config(args.config)
+    device = resolve_device(args.device)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    results = []
+    for spec in args.configs.split(";"):
+        method, bs, lengths, *rest = spec.split(",")
+        autocast = rest[0] if rest and rest[0] != "none" else None
+        print(f"benchmark {method} batch={bs} lengths={lengths} autocast={autocast}", flush=True)
+        r = run_benchmark(cfg, device, method=method, batch_size=int(bs), lengths=lengths,
+                          warmup_steps=args.warmup_steps, timed_steps=args.timed_steps, autocast=autocast)
+        print(json.dumps(r, indent=2, default=str), flush=True)
+        results.append(r)
+        out.write_text(json.dumps({"time_utc": datetime.now(timezone.utc).isoformat(),
+                                   "environment": environment_report(device), "results": results},
+                                  indent=2, default=str) + "\n")
+    print(f"wrote {out}")
+    return 0
+
+
+def cmd_precision_check(args: argparse.Namespace) -> int:
+    from .evaluation.precision import precision_check
+    from .training.data import load_verified_examples
+
+    device = resolve_device(args.device)
+    examples, ident = load_verified_examples(args.data_dir, "train", args.manifest_sha256)
+    report = precision_check(device, examples, n_examples=args.n_examples, seed=args.seed)
+    report["data_identity"] = ident.to_dict()
+    report["environment"] = environment_report(device)
+    Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.out).write_text(json.dumps(report, indent=2, default=str) + "\n")
+    print(json.dumps({k: v for k, v in report.items() if k != "environment"}, indent=2, default=str))
+    return 0
+
+
+def cmd_calibrate(args: argparse.Namespace) -> int:
+    from .evaluation.calibrate import CALIBRATION_SPLITS, calibrate, write_traces
+    from .evaluation.generation import parse_budgets
+    from .training.data import load_verified_examples, select_per_setting
+    from .training.model_io import load_trained_adapter
+    from .training.run import sampler_allowed, task_format
+
+    if args.split not in CALIBRATION_SPLITS:
+        raise SystemExit(f"calibration never evaluates {args.split!r}; use val (or train for wiring checks)")
+    device = resolve_device(args.device)
+    tok, tf = task_format(args.model_dir, args.data_dir)
+    examples, ident = load_verified_examples(args.data_dir, args.split, args.manifest_sha256,
+                                             allowed_splits=CALIBRATION_SPLITS)
+    settings = None
+    if args.settings != "all":
+        settings = set()
+        for s in args.settings.split(","):
+            fam, n, d = s.split(":")
+            settings.add((fam, int(n), int(d)))
+    chosen = select_per_setting(examples, args.n_per_setting, settings)
+    adapter, model_id = load_trained_adapter(args.checkpoint, device, args.model_dir)
+    budgets = parse_budgets(args.budgets)
+    meta = {"command": "calibrate", "time_utc": datetime.now(timezone.utc).isoformat(), "model": model_id,
+            "eval_data": ident.to_dict(), "split": args.split, "n_per_setting": args.n_per_setting,
+            "settings": args.settings, "n_examples": len(chosen),
+            "selected_problem_ids": [e.problem_id for e in chosen], "budgets": [str(b) for b in budgets],
+            "sampler": "D-029 monotone, greedy, allowed = non-special tokenizer IDs, rank by raw p",
+            "batch_size": args.batch_size, "device": str(device)}
+    trained_on = model_id.get("data_identity", {}).get("manifest_sha256") if isinstance(model_id, dict) else None
+    meta["checkpoint_trained_on_manifest"] = trained_on
+    meta["same_dataset_version_as_training"] = (trained_on == ident.manifest_sha256) if trained_on else None
+    out = Path(args.out)
+    summary = calibrate(adapter, chosen, budgets, tf, sampler_allowed(adapter, tf), out, meta,
+                        batch_size=args.batch_size)
+    if args.trace_examples:
+        fams = {}
+        for e in chosen:
+            fams.setdefault(e.family, [])
+            if len(fams[e.family]) < args.trace_examples:
+                fams[e.family].append(e)
+        write_traces(adapter, [e for v in fams.values() for e in v], args.trace_calls, tf,
+                     sampler_allowed(adapter, tf), tok, out / "traces.txt")
+    print((out / "summary.md").read_text())
+    print(f"total {summary['total_wall_seconds']}s; wrote {out}")
+    return 0
+
+
+def cmd_compare_runs(args: argparse.Namespace) -> int:
+    from .evaluation.compare import compare_runs
+
+    rep = compare_runs(Path(args.run_a), Path(args.run_b), args.checkpoint, args.loss_rtol, args.param_atol,
+                       Path(args.reference_model) if args.reference_model else None, args.divergence_rtol)
+    if args.out:
+        Path(args.out).write_text(json.dumps(rep, indent=2) + "\n")
+    print(json.dumps(rep, indent=2))
+    return 0 if rep["passed"] else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="dlmc")
     sub = p.add_subparsers(dest="command", required=True)
@@ -291,6 +419,64 @@ def main(argv: list[str] | None = None) -> int:
     ie.add_argument("--json", default=None, help="also write the table as JSON to this path")
     ie.add_argument("--model-dir", default=None)
     ie.set_defaults(func=cmd_inspect_example)
+
+    tr = sub.add_parser("train", help="masked-diffusion warmup / overfit run (resumable)")
+    tr.add_argument("--config", required=True)
+    tr.add_argument("--device", default="auto", choices=["cpu", "mps", "cuda", "auto"])
+    tr.add_argument("--run-dir", default=None, help="default runs/train/<run_name>")
+    tr.add_argument("--resume", default=None, help="'auto' (local latest, else durable latest) or a checkpoint dir")
+    tr.add_argument("--seed", type=int, default=None)
+    tr.add_argument("--max-updates", type=int, default=None)
+    tr.add_argument("--max-wall-seconds", type=float, default=None)
+    tr.add_argument("--durable-dir", default=None, help="copy completed checkpoints here (e.g. Google Drive)")
+    tr.add_argument("--set", action="append", help="override a config key, e.g. --set optimizer.lr=1e-5")
+    tr.set_defaults(func=cmd_train)
+
+    bm = sub.add_parser("benchmark", help="timed training updates on fresh models (memory/runtime pilot)")
+    bm.add_argument("--config", required=True)
+    bm.add_argument("--device", default="auto", choices=["cpu", "mps", "cuda", "auto"])
+    bm.add_argument("--configs", default="full,16,mixed",
+                    help="';'-separated method,batch,lengths[,autocast], e.g. 'full,16,longest;lora,16,longest'")
+    bm.add_argument("--warmup-steps", type=int, default=3)
+    bm.add_argument("--timed-steps", type=int, default=10)
+    bm.add_argument("--out", default="runs/benchmark/benchmark.json")
+    bm.set_defaults(func=cmd_benchmark)
+
+    pc = sub.add_parser("precision-check", help="bf16 vs fp32 forward/loss/gradient on a real-data fixture")
+    pc.add_argument("--device", default="auto", choices=["cpu", "mps", "cuda", "auto"])
+    pc.add_argument("--data-dir", required=True)
+    pc.add_argument("--manifest-sha256", required=True)
+    pc.add_argument("--n-examples", type=int, default=8)
+    pc.add_argument("--seed", type=int, default=0)
+    pc.add_argument("--out", default="runs/benchmark/precision.json")
+    pc.set_defaults(func=cmd_precision_check)
+
+    ca = sub.add_parser("calibrate", help="validation difficulty calibration with the monotone sampler")
+    ca.add_argument("--checkpoint", default="pretrained", help="checkpoint dir or 'pretrained'")
+    ca.add_argument("--data-dir", required=True)
+    ca.add_argument("--manifest-sha256", required=True)
+    ca.add_argument("--split", default="val")
+    ca.add_argument("--settings", default="all", help="'all' or family:length:digits,...")
+    ca.add_argument("--n-per-setting", type=int, default=32)
+    ca.add_argument("--budgets", default="1,2,4,8,L", help="model calls; L = one token per call")
+    ca.add_argument("--batch-size", type=int, default=32)
+    ca.add_argument("--device", default="auto", choices=["cpu", "mps", "cuda", "auto"])
+    ca.add_argument("--model-dir", default="runs/hf/open-dcoder-0.5B")
+    ca.add_argument("--trace-examples", type=int, default=0, help="token-state traces per family")
+    ca.add_argument("--trace-calls", type=int, default=4)
+    ca.add_argument("--out", required=True)
+    ca.set_defaults(func=cmd_calibrate)
+
+    cr = sub.add_parser("compare-runs", help="batch-by-batch and final-parameter comparison of two runs")
+    cr.add_argument("run_a")
+    cr.add_argument("run_b")
+    cr.add_argument("--checkpoint", default=None)
+    cr.add_argument("--loss-rtol", type=float, default=0.0)
+    cr.add_argument("--param-atol", type=float, default=0.0)
+    cr.add_argument("--reference-model", default=None, help="initial weights (safetensors) for the relative check")
+    cr.add_argument("--divergence-rtol", type=float, default=None)
+    cr.add_argument("--out", default=None)
+    cr.set_defaults(func=cmd_compare_runs)
 
     args = p.parse_args(argv)
     return args.func(args)

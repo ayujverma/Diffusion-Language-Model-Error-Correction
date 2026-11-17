@@ -1,0 +1,31 @@
+# Gate C checkpoint/resume trajectory check on the real backbone, using the warmup
+# training path (batch 32, fp32 full fine-tuning). Three runs are compared:
+# uninterrupted, an uninterrupted repeat (device noise floor), and interrupted at
+# update 5 then resumed in a new process.
+run_name: gatec-resume
+seed: 20261117
+backbone: open-dcoder
+model_dir: runs/hf/open-dcoder-0.5B
+data:
+  dir: runs/data/pilot-seed20261116
+  split: train
+  manifest_sha256: 990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536
+  verify: true
+method: full
+dtype: float32
+batch_size: 32
+optimizer: {name: adamw, lr: 3.0e-5, betas: [0.9, 0.999], eps: 1.0e-8, weight_decay: 0.01}
+scheduler: {name: linear_warmup_constant, warmup_updates: 20}
+clip_grad_norm: 1.0
+limits:
+  max_updates: 10
+checkpoint:
+  every_updates: 5
+  keep_last: 3
+eval:
+  every_updates: 0
+  split: val
+  n_examples: 36
+  batch_size: 36
+log_every: 1
+memory_every: 5

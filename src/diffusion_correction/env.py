@@ -30,6 +30,14 @@ def synchronize(device: torch.device) -> None:
         torch.mps.synchronize()
 
 
+def release_cached_memory(device: torch.device) -> None:
+    """Return cached allocator blocks to the driver (no effect on live tensors)."""
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
+
+
 def memory_snapshot(device: torch.device) -> dict:
     # ru_maxrss is bytes on macOS, kilobytes on Linux.
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
