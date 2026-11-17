@@ -430,3 +430,281 @@ diff was verified empty):
 
 No dataset was regenerated. The split files' sha256 values are unchanged, matching
 their manifests.
+
+## Milestone 3: masked warmup and difficulty calibration (2026-11-17)
+
+Device for every run below: Apple M2 Max (MPS), fp32. No CUDA device is available
+locally and no paid compute was used; nothing in this section was measured on an A100.
+Large artifacts live under `runs/` (git-ignored). Dataset for every run: the pilot,
+manifest `990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536`,
+train split sha256 `215fdb4a…e18a` (18,000 examples); evaluation uses the `val` split of
+the same manifest. No `test_*` split was loaded.
+
+### Software status
+
+| Component | Status |
+| --- | --- |
+| D-028 masking, RNG streams, verified data loading, epoch sampler | TESTED LOCALLY, used on real backbone |
+| Trainer (AdamW + linear-warmup/constant LR, clipping, zero-mask skip, JSONL metrics) | TESTED LOCALLY + TESTED ON REAL BACKBONE |
+| Atomic checkpoints, resume validation, durable copy + copy-back | TESTED LOCALLY + TESTED ON REAL BACKBONE |
+| LoRA (`LoRALinear`, r 16, α 32, 7 projection types) | TESTED LOCALLY + TESTED ON REAL BACKBONE (20-update run, one-step freeze check) |
+| D-029 monotone sampler with observer hook and traces | TESTED LOCALLY + TESTED ON REAL BACKBONE |
+| Generation scoring, `dlmc calibrate`, `benchmark`, `precision-check`, `compare-runs` | TESTED ON REAL BACKBONE |
+| Colab launcher `notebooks/colab_runner.ipynb` | IMPLEMENTED only (no CUDA runtime was used) |
+
+### Sequence lengths
+
+Pilot training sequences (prompt + response) are 59–141 tokens, mean ≈ 95. The
+longest setting is programs, length 6, digits 3. Responses have 10, 20 or 30 tokens.
+
+### Precision (`dlmc precision-check --device mps`, `runs/benchmark/precision_mps.json`)
+
+Fixed fixture: 8 training examples padded to 8 × 119, 86 masked tokens (D-028 masks
+from a fixed stream), fp32 reference loss 4.14837. Tolerances were declared in
+`evaluation/precision.py` before the run: loss relative difference ≤ 2e-2, masked-row
+argmax agreement ≥ 0.98, global gradient relative L2 ≤ 0.1, gradient cosine ≥ 0.995.
+
+| Candidate | loss rel. diff | argmax agreement | grad rel. L2 | grad cosine | fwd+bwd s (last 2) | Passes |
+| --- | --- | --- | --- | --- | --- | --- |
+| fp32 repeat (noise floor) | 0 | 1.0 | 5.5e-9 | 1.0 | — | — |
+| bf16 autocast, fp32 master | 7.1e-4 | 0.988 | 0.024 | 0.9997 | 1.35, 1.31 (fp32: 1.11, 1.18) | yes |
+| pure bf16 parameters | 5.9e-6 | 0.977 | 0.030 | 0.9996 | 1.29, 1.25 | **no** (argmax) |
+
+The fp32 forward is bitwise repeatable on MPS; the backward is not quite (5.5e-9).
+Decision D-030: fp32 without autocast.
+
+### Timing/memory pilot (`dlmc benchmark`, `runs/benchmark/pilot_mps.json`)
+
+Fresh model per configuration; 3 counted warmup updates then 10 timed updates with
+`torch.mps.synchronize()` around each; timing covers forward + loss + backward + clip
++ AdamW + scheduler. Memory definitions: *live* = `torch.mps.current_allocated_memory`
+(tensors); *driver* = `torch.mps.driver_allocated_memory` (includes the allocator
+cache). Analytic fp32 full fine-tuning: parameters 1.976 GB, gradients 1.976 GB,
+AdamW state 3.952 GB.
+
+| Configuration | s/update | examples/s | live GB | driver max GB |
+| --- | --- | --- | --- | --- |
+| full, batch 16, mixed lengths | 2.85 | 5.59 | 6.05 | 30.1 |
+| full, batch 16, longest setting | 2.92 | 5.47 | 6.05 | 21.8 |
+| full, batch 32, longest (32 × 133–136, 4,299 real tokens) | 5.88 | 5.44 | 6.05 | 36.0 |
+| LoRA, batch 16, longest | 2.55 | 6.26 | 2.12 | 15.1 |
+| LoRA, batch 32, longest | 4.61 | 6.93 | 2.12 | 29.6 |
+| full, batch 16, longest, bf16 autocast | 3.16 | 5.06 | — | 21.6 |
+
+LoRA trainable parameters: 8,798,208 (matches `expected_lora_parameter_count`).
+
+### Feasibility runs (20 updates, identical batches and masks)
+
+`dlmc train` with `configs/train/warmup_pilot.yaml` (then batch 16) plus `--set`
+overrides for `run_name`, `limits.max_updates=20`, `eval.generate_budgets=[]`,
+`checkpoint.every_updates=0`, and for LoRA `method=lora optimizer.lr=2e-4`: full fine-tuning at lr 3e-5 (`runs/train/feas-full-20`) went from
+loss 3.746 to 1.517, val masked loss 1.445, 74.9 s of training, 5.9 GB checkpoint
+saved in 16 s. LoRA at lr 2e-4 (`runs/train/feas-lora-20`) ended at 1.652, val masked
+loss 1.686, 53.6 s. These 20-update numbers show that the wiring trains; they are not
+evidence about generalization or about which method is better.
+
+### Gate C
+
+**Overfit** (`dlmc train --config configs/train/overfit32.yaml --device mps`,
+`runs/train/gatec-overfit32`): 32 fixed training examples (stratified, subset seed 0,
+selected-ID sha256 `46e8ed66…1abb`), batch 16, fp32 full fine-tuning, lr 3e-5,
+evaluation every 50 updates on the same 32 examples with the D-029 sampler. Early
+stop rule declared in the config: trace accuracy 1.0 at T = L and masked loss ≤ 0.05.
+
+| update | masked loss | T = L final / trace / malformed | T = 2 final / trace / malformed |
+| --- | --- | --- | --- |
+| 0 (pretrained) | 4.109 | 0 / 0 / 100% | 0 / 0 / 100% |
+| 50 | 0.512 | 44% / 22% / 3% | 41% / 19% / 0% |
+| 100 | 0.048 | 97% / 69% / 0% | 88% / 69% / 3% |
+| 150 | 0.0098 | 94% / 88% / 3% | 100% / 100% / 0% |
+| 200 | 0.0046 | 100% / 88% / 0% | 100% / 100% / 0% |
+| 250 | 0.0007 | **100% / 100% / 0%** | **100% / 100% / 0%** |
+
+It stopped early at update 250 of the 500 allowed (758 s), with 0 zero-mask batches
+skipped. Checkpoint `ckpt-0000250`, model sha256 `e278dcfd…13b7`. The pretrained
+model's malformed outputs were mostly `bad_sign_token`: it does not emit the format
+before training.
+
+**Prediction and loss inspection** (`scripts/gatec_inspect.py`,
+`runs/gatec/inspect/inspect.txt`). For 4 overfit examples with the whole response
+masked, every target token is the argmax, with p(target) ≥ 0.9977 and the pooled loss
+≤ 2.4e-4. Per-position CE is listed in the file. The sampler output at T = L and T = 2
+equals the target string, for example `' +0028 +0112 +0672 +6048'` for `a = 7 * 4, b = a * 4,
+c = b * 6, d = c * 9`.
+
+**Parameter updates.** Full fine-tuning: all 290 stored tensors of the overfit
+checkpoint differ from the pinned pretrained tensors (the tied `lm_head` is not stored
+separately). LoRA, one real update on MPS with the same data: all 168 `lora_B` tensors
+changed and all 290 base tensors are bitwise unchanged, with 8,798,208 trainable
+parameters.
+
+**Checkpoint/resume** (`configs/train/resume_check.yaml`: batch 32, warmup
+optimizer/schedule, 10 updates, checkpoints at 5 and 10):
+- A: uninterrupted (`runs/train/resume-A`).
+- A2: an identical uninterrupted repeat, which gives the device noise floor.
+- B: `--max-updates 5 --durable-dir runs/durable/resume-B`. The process exited. Then
+  `runs/train/resume-B/checkpoints` was **deleted**, and a new process ran with
+  `--resume auto --durable-dir runs/durable/resume-B`. It copied `ckpt-0000005` back
+  from the durable copy, re-verified the hashes and resumed (`accelerator_rng_restored:
+  true`, `cross_device: false`). The durable copies logged `ok: true` only after
+  re-hashing.
+- `dlmc compare-runs runs/train/resume-A runs/train/resume-{B,A2} --checkpoint
+  ckpt-0000010 --reference-model runs/hf/open-dcoder-0.5B/model.safetensors
+  --loss-rtol 1e-4 --param-atol 1e-5 --divergence-rtol 1e-3` (`runs/gatec/compare-*.txt`).
+
+| | A vs B (resumed) | A vs A2 (repeat) |
+| --- | --- | --- |
+| batch / epoch / example IDs / problem IDs / mask digests / t / n_masked / lr | identical, all 10 | identical, all 10 |
+| max loss relative difference | 4.1e-7 | 3.9e-6 |
+| max grad-norm relative difference | 3.6e-5 | 1.3e-4 |
+| max parameter abs difference at update 10 | 9.5e-7 | 3.8e-6 |
+| ‖θ_A − θ_X‖ / ‖θ_A − θ_pretrained‖ | 2.1e-5 | 4.2e-5 |
+| passed (declared tolerances) | yes | yes |
+
+The resumed trajectory is within the device's own run-to-run noise: MPS backward is
+not bitwise deterministic, so bitwise equality is not expected. Data order and masks
+are exact. Cross-device limits: the accelerator RNG state is restored only on the same
+device type. Masks and data order are generated on the CPU and stay identical across
+devices, but MPS-to-CUDA resumes are not expected to match numerically beyond the
+precision tolerances.
+
+### Common warmup (`runs/train/warmup-pilot-v1`)
+
+Command: `dlmc train --config configs/train/warmup_pilot.yaml --device mps --run-dir
+runs/train/warmup-pilot-v1`. The run started from the pinned pretrained weights, with
+the settings fixed by D-028/D-030: fp32 full fine-tuning, AdamW lr 3e-5, a 20-update
+linear warmup then constant, clipping at 1.0, physical batch 32, seed 20261117.
+Validation monitoring used 144 `val` problems (8 per setting), every 250 updates plus
+update 0, at T = L and T = 4.
+
+**Two earlier attempts failed and are archived; neither wrote a checkpoint.**
+1. `runs/train/warmup-pilot-v1.oom-attempt`: an MPS out-of-memory error after 17
+   updates. The update-0 evaluation (batch 48, full-vocabulary fp32 logits) left
+   large cached blocks.
+2. `runs/train/warmup-pilot-v1.swap-attempt`: 59 updates in 55 minutes. Step time
+   rose from 5 s to 150 s. At update 50 the Metal driver held 78.2 GB against 6.0 GB
+   of live tensors (the recommended maximum is 55.7 GB), and macOS swap was full. The
+   cause: padded lengths vary per batch, so the MPS allocator keeps caching new block
+   sizes, and it only reclaims at 1.4× the recommended maximum.
+Fixes: `env.release_cached_memory` runs after every update (`release_cache_every:
+1`), after each evaluation, and after each generation batch; the evaluation batch is
+24. These change memory behaviour only. All three attempts produced identical losses
+at matching updates (for example update 10: 1.8015, gradient norm 8.73), because the
+data order and masks come from the seeded CPU streams.
+
+**Completed run.** Stopped by `max_updates`. 1,000 updates = 1,000 batches = 32,000
+examples (1.78 epochs of the 18,000 training examples). 0 zero-mask batches;
+3,043,874 real tokens; 320,654 masked tokens. Training wall time **5,790 s** (cap
+7,200 s), including the evaluations (about 92 s each) and checkpoint saves (about
+10 s each). Median step 5.01 s. Metal driver memory stayed between 28.7 and 30.5 GB;
+live tensors 6.05 GB. Final checkpoint `ckpt-0001000`: model sha256
+`f48abe457d483b19b854e1fdf6be4bb294c702f949f9d76d7c44a2274b0d5a6a`, optimizer sha256
+`ae55b394…99af`; `ckpt-0000900` is also kept. Trained on the pilot `train` split;
+evaluated on the pilot `val` split (same manifest).
+
+The gradient norm before clipping was above 1.0 on **all 1,000 updates**: median
+5.15, last-100 median 4.71, range 3.03–50.6. So clipping set the update magnitude
+throughout. This is reported, not changed: D-030 fixed the setting before the run.
+
+| update | mean train loss (window) | val masked loss | T = L final / value / trace / malformed | T = 4 final / value / trace / malformed |
+| --- | --- | --- | --- | --- |
+| 0 (pretrained) | — | 3.878 | 0 / 0 / 0 / 100% | 0 / 0 / 0 / 100% |
+| 250 | | 0.909 | 13.9% / 22.4% / 11.1% / 0.7% | 9.7% / 20.7% / 6.3% / 0.7% |
+| 500 | 0.781 (451–500) | 0.755 | 19.4% / 36.8% / 18.1% / 2.8% | 10.4% / 29.2% / 9.0% / 2.1% |
+| 750 | | 0.671 | 23.6% / 42.7% / 22.2% / 1.4% | 16.7% / 37.0% / 16.0% / 1.4% |
+| 1000 | 0.613 (951–1000) | 0.591 | 38.9% / 54.3% / 35.4% / 0.0% | 24.3% / 45.1% / 23.6% / 0.7% |
+
+The mean training loss over updates 1–50 was 1.616. Validation loss and accuracy were
+still improving at update 1,000, so the warmup reached its update cap without
+converging. Whether to warm up longer before freezing the generator is left open
+(handoff).
+
+### Validation calibration (D-031)
+
+Model: `warmup-pilot-v1/ckpt-0001000` (sha256 `f48abe45…5a6a`). Data: pilot `val`
+only, verified against manifest `990ecd1d…1536`. Sampler: D-029. No test split was
+loaded.
+
+**Stage 1 screen** (`dlmc calibrate … --settings all --n-per-setting 32 --budgets
+1,2,4,8,L --batch-size 32 --trace-examples 1 --trace-calls 4 --out
+runs/calibration/screen-warmup1000`). It covered 18 settings × 32 problems × 5 budgets
+and took 651 s. The last settings ran under the same cache-growth memory pressure;
+their accuracies are unaffected (greedy decoding is deterministic), but their model
+seconds are inflated. The full table is in `runs/calibration/screen-warmup1000/
+summary.md`. Final-answer accuracy ranged from 59–91% (length 2, digits 1) down to
+0–3% (length 6, digits 3) in both families. **Dataset rule (D-031):** neither family
+is ≥ 98% everywhere or < 5% at T = L everywhere. The pilot dataset is kept: no new
+manifest.
+
+**Stage 2 selection** (`scripts/select_calibration_settings.py`, output in
+`runs/calibration/screen-warmup1000/stage2_selection.txt`). The first version of the
+script added the middle setting only when *no* setting was in band. D-031 says it is
+added when fewer qualify than there are free slots. The script was corrected to match
+the recorded rule **before** stage 2 ran. Selected per family: easiest (2, 1), hardest
+(6, 3), in-band (arithmetic: (4, 1), (2, 2); programs: (2, 2), (2, 3)), and the middle
+(4, 2).
+
+**Stage 2** (`dlmc calibrate … --settings <10 settings> --n-per-setting 200 --budgets
+1,2,4,8,L --batch-size 50 --trace-examples 2 --trace-calls 4 --out
+runs/calibration/stage2-warmup1000`). It covered 2,000 problems × 5 budgets and took
+1,404 s. One earlier attempt hit the same cache growth (63 GB process, full swap) and
+was stopped after 42 of 50 cells. It is archived as
+`runs/calibration/stage2-warmup1000.swap-attempt`; its accuracies for the shared cells
+are identical. After the fix (cache release per generation batch) the process stayed
+at about 9 GB.
+
+Final-answer accuracy (n = 200 per cell). Every cell also records value, token and
+trace accuracy, malformed rate and reasons, value errors per response, calls per
+example and model seconds in `summary.md`/`summary.json`, with per-example records in
+`records.jsonl`:
+
+| family | length | digits | L | T=1 | T=2 | T=4 | T=8 | T=L | malformed (range) | model s at T=L |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| arithmetic | 2 | 1 | 10 | 0.660 | 0.770 | 0.880 | 0.910 | 0.910 | 1.0–1.5% | 25.7 |
+| arithmetic | 2 | 2 | 10 | 0.180 | 0.215 | 0.360 | 0.470 | 0.470 | 0.5% | 27.1 |
+| arithmetic | 4 | 1 | 20 | 0.060 | 0.070 | 0.270 | 0.535 | 0.670 | 0.5–3.5% | 75.9 |
+| arithmetic | 4 | 2 | 20 | 0.005 | 0.010 | 0.055 | 0.100 | 0.225 | 0–1.0% | 80.1 |
+| arithmetic | 6 | 3 | 30 | 0.000 | 0.000 | 0.010 | 0.015 | 0.025 | 0–2.0% | 175.7 |
+| programs | 2 | 1 | 10 | 0.695 | 0.790 | 0.860 | 0.880 | 0.880 | 1.5–4.0% | 30.0 |
+| programs | 2 | 2 | 10 | 0.250 | 0.340 | 0.475 | 0.535 | 0.530 | 0.5% | 31.6 |
+| programs | 2 | 3 | 10 | 0.185 | 0.215 | 0.350 | 0.405 | 0.400 | 0% | 33.2 |
+| programs | 4 | 2 | 20 | 0.015 | 0.040 | 0.090 | 0.115 | 0.155 | 0–2.5% | 90.7 |
+| programs | 6 | 3 | 30 | 0.010 | 0.010 | 0.015 | 0.015 | 0.020 | 0–9.0% | 193.7 |
+
+Observations (calibration facts, not experimental results):
+- More calls help in every setting, most for longer responses. T = 8 and T = L
+  coincide for L = 10, where T = 8 reveals one token per call except for two calls.
+- The only malformed reason observed is `negative_zero` (`" -0000"`). Malformed rates
+  are 0–9%, highest at T = 1 in programs (6, 3).
+- Wrong responses usually contain several wrong values: for example, 4.8 value errors
+  per response in the (6, 3) settings, against 0.1–0.3 in (2, 1).
+- Cells inside the 40–85% heuristic band: arithmetic (2, 1) at T = 1–2; arithmetic
+  (2, 2) at T = 8/L; arithmetic (4, 1) at T = 8/L; programs (2, 1) at T = 1–2; programs
+  (2, 2) at T = 4/8/L; programs (2, 3) at T = 8/L (0.405/0.400). The band is a heuristic only.
+  No weights were changed to reach it, and no final primary budget is chosen here.
+- Token-state traces for 2 examples per family at T = 4 are in `traces.txt` in each
+  output directory. Quotas follow ⌈sL/T⌉ (for example 3, 2, 3, 2 for L = 10), no
+  token is revised, and no mask remains after the last call.
+
+### Tests and mutation check (final, after all code changes)
+
+| Command | Result |
+| --- | --- |
+| `.venv/bin/python -m pytest -q` (outside the sandbox) | **216 passed** in 18.6 s (180 before milestone 3) |
+| `pytest --co -m real_backbone` / `-m tokenizer` / `-m "not real_backbone and not tokenizer"` | 8 / 68 / 140 tests |
+| `.venv/bin/python scripts/mutation_check_m3.py` | **12/12 mutants caught**. Each mutant is applied, the targeted tests run, then the source is restored; the targeted tests pass again afterwards (35 passed) |
+
+Mutants: resume without mask-stream restore; sampler may revise tokens; candidate ties
+→ largest ID; ranking by restricted probability; position ties → rightmost;
+floor-based schedule; one mask rate per batch; maskable prompt; zero-mask batch steps
+the scheduler; evaluation uses the training mask stream; LoRA leaves the base
+trainable; sampler sees the reference length.
+
+### Not run in milestone 3
+
+- Any CUDA/A100 run: the Colab launcher is untested, and no A100 timing exists.
+- Any `test_id`, `test_long` or `test_unseen` evaluation.
+- A warmup longer than 1,000 updates, and any warmup hyperparameter search.
+- Draft-bank collection, correction training, and any experimental arm (milestone 4
+  onward).
+- No human review.

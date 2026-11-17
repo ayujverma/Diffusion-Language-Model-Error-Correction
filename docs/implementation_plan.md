@@ -39,39 +39,33 @@ TESTED ON REAL BACKBONE (Open-dCoder-0.5B), EXPERIMENT COMPLETED.
 
 Format spec: `docs/data_format.md`. Protocol: `docs/inputs/Cursor_Diffusion_LM_Build_Prompt.txt` (tracked, D-025).
 
-## Milestone 3: warmup and difficulty calibration (next)
+## Milestone 3: warmup and difficulty calibration (DONE 2026-11-17, local MPS)
 
-Do these in order. Items 1–2 are decisions that must be recorded before warmup code
-is run on real data.
+Each item lists its status; the evidence is in `docs/verification.md`, "Milestone 3".
 
-1. **D-006/D-017/D-026 mask policy.** Masking is over editable response tokens only,
-   with the prompt fixed (protocol, D-026; not an open choice). Before any warmup,
-   fix in a new decision entry: the precise mask-rate sampling (for example,
-   upstream-style t = clamp(u, 1/500, 1 − 1/500) with u ~ U(0,1), drawn per example;
-   or a different stated distribution; Bernoulli vs. exact-count masking), and
-   zero-mask handling (for example, resample or force at least one masked token).
-2. **Memory/runtime pilot** on MPS (and A100 only if the user approves paid
-   hardware): full fine-tuning vs. LoRA, bf16 vs. fp32 on MPS (Q-3), batch and
-   sequence size for the pilot data (prompt plus response is 59–230 tokens). Record the measured seconds per step and per example; this is the
-   early runtime estimate (D-022). Fix the trainable-parameter policy for all main
-   arms.
-3. Trainer with resumable checkpoints (model, optimizer, scheduler, step, RNG,
-   data order), JSONL metrics, config/provenance capture. Inputs come from the
-   verified data files (`load_split`), never regenerated on the fly.
-4. Ordinary monotone unmasking sampler (integer reveal schedule) with call counting
-   and token-state traces. Resolve its ambiguities (reveal schedule, ties, which
-   confidence decides the commit order) in a decision entry **before** writing it
-   (D-022). Constraints (D-027): training responses have 10, 20 or 30 editable
-   tokens; use only feasible schedules (at least one reveal per call, no mask left at
-   the end); report actual calls; never add no-op calls to match a budget.
-5. Gate C wiring checks: overfit 16–32 examples; checkpoint/resume reproduces the
-   loss trajectory.
-6. Difficulty-calibration command and pilot (200–500 validation problems per
-   setting, several budgets), using the checker's metrics. Record the chosen
-   settings before any test evaluation, then regenerate the dataset if the grid
-   changes (new manifest hash).
-7. Start the methods section (tasks, format, checker, objective) from the verified
-   code.
+1. **Mask policy** (D-028, recorded before trainer code): per-example clamped-uniform
+   t, Bernoulli response-only masking, zero-mask examples kept, all-zero minibatches
+   skip the optimizer and scheduler steps, pooled CE, gradient accumulation 1,
+   separate RNG streams. DONE, TESTED LOCALLY.
+2. **Memory/runtime pilot and precision** (D-030): fp32 full fine-tuning, chosen over
+   bf16 and LoRA from measurements on MPS. DONE. The A100 is unmeasured.
+3. **Trainer** with atomic, resumable checkpoints and a verified durable copy.
+   DONE, TESTED ON REAL BACKBONE.
+4. **Monotone sampler** (D-029, recorded before the code). DONE, TESTED ON REAL
+   BACKBONE.
+5. **Gate C**: the overfit reached 100% trace accuracy on 32 examples at update 250,
+   and the resume trajectory falls within the device's own noise floor. PASSED.
+6. **Common warmup**: `warmup-pilot-v1`, 1,000 updates (the cap), 5,790 s. DONE
+   within its limits, but still improving at the cap, so the model is not converged.
+7. **Validation calibration** (D-031): an 18-setting screen, then 200 problems × 10
+   selected settings × 5 budgets. DONE. The pilot dataset is kept (no new
+   manifest). The final primary budget is not chosen here.
+8. **Methods draft**: `paper/methods.md`. Started from the verified code; it
+   contains no results.
+
+Open after milestone 3 (not blocking milestone 4 software): whether to extend the
+warmup beyond 1,000 updates before freezing the generator for the draft bank (the
+loss was still falling), and any A100 measurement.
 
 ## Milestone 4: immutable draft bank and signal diagnostics
 
@@ -114,8 +108,8 @@ from raw records.
 1. Read this file, then `docs/decisions.md`, `docs/verification.md`, and
    `docs/source_audit.md` §5 (open questions).
 2. Recreate the environments and assets with the README "Setup" commands, then run
-   `.venv/bin/python -m pytest -q`. All 180 tests should pass. The 7
+   `.venv/bin/python -m pytest -q`. All 216 tests should pass. The 8
    `real_backbone` tests need the weights and the 68 `tokenizer` tests need the
    tokenizer files. Inside a sandbox that hides MPS, the MPS case is not collected
-   (179).
+   (215).
 3. Start at the first unchecked item of the next milestone.

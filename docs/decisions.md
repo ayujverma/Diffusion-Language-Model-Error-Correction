@@ -345,3 +345,176 @@ note).**
 - It must not add no-op calls to reach a nominal budget. A budget larger than the
   response length is infeasible, and is reported as such.
 - The reveal-schedule and tie-breaking decisions (D-022) must respect this.
+
+## Milestone 3: warmup and calibration (2026-11-17)
+
+**D-028 (2026-11-17) Masked-warmup mask policy; resolves Q-8 and the open parts of
+D-017(a)/(b) and D-026. Recorded before any trainer code was written.** This policy
+is the ordinary masking branch for the common warmup, and it stays common across all
+main experimental arms later. With D-017 (pooled CE, no 1/t, no path term) and D-026
+(response-only), it fully specifies L_mask.
+- **Rate.** Draw u_b ~ U(0, 1) independently for each example b. Set
+  t_b = clamp(u_b, 1/500, 1 − 1/500). This is a clamped uniform, with mass 1/500 at
+  each endpoint, not a uniform draw on [1/500, 1 − 1/500] (D-026 wording).
+- **Masking.** Mask each editable response token of b independently, with
+  probability t_b (independent Bernoulli, not exact-count). Prompt and padding tokens
+  never change.
+- **Zero-mask examples are kept.** There is no resampling and no forced mask. Such an
+  example contributes nothing to L_mask but still counts as consumed data. For a
+  response of L tokens, P(no mask) = E[(1 − t)^L] ≈ 1/(L + 1) (about 9% at L = 10).
+- **Estimator.** L_mask = Σ_{i∈M} ℓ_i / |M|, where M is the set of masked response
+  tokens in the whole physical minibatch (D-017). There is no 1/t weighting and no
+  auxiliary path term.
+- **All-zero minibatch.** If |M| = 0 for the whole physical minibatch, the optimizer
+  and the LR scheduler are **not** stepped, and a `skipped_zero_mask` event is logged.
+  The trainer counts *data batches consumed* separately from *optimizer updates
+  completed*. Run limits (`max_updates`) refer to completed updates.
+- **Gradient accumulation = 1.** The trainer rejects any other value. A later change
+  must first define the accumulation normalization (pooled over all micro-batches or
+  per micro-batch) and the empty-micro-batch rule, and test them; it must not silently
+  change pooled-token normalization.
+- **RNG streams.** Separate `torch.Generator`s on the CPU, each seeded from
+  sha256(run seed, stream name):
+  - `data_order`: the per-epoch permutation of the training examples;
+  - `train_mask`: the u_b and Bernoulli draws;
+  - `eval`: re-seeded from the same seed at the start of every evaluation, so every
+    evaluation sees the same masks and never advances a training stream.
+  Masks are drawn on the CPU, so they are identical on CPU, MPS and CUDA. Draw order
+  within a batch: for each example in batch order, one float64 u, then one float64
+  draw per response position; position j is masked iff its draw < t_b.
+- **Checkpoints** store the state of every stream (D-030).
+
+**D-029 (2026-11-17) Ordinary monotone unmasking sampler; satisfies D-022 and D-027.
+Recorded before the sampler code was written.** This is a calibration and collection
+sampler, not the frozen final experimental budget.
+- **Inputs.** Prompt token IDs and the public response length only. Response length
+  is (number of named values in the prompt) × slot length, from the task layout. The
+  sampler never receives targets, error labels, reference-derived lengths or
+  correctness feedback.
+- **Start.** The prompt is fixed and every response position is `<M>`.
+- **Schedule.** For L editable tokens and T model calls, 1 ≤ T ≤ L is required;
+  T > L is reported as infeasible and not run (no clamping, no no-op calls). After
+  call s the total revealed count is K_s = ⌈s·L/T⌉ (K_0 = 0), so call s reveals
+  K_s − K_{s−1} ≥ 1 new positions. After call T, K_T = L: no mask remains, and there
+  is no extra filling call. Previously revealed tokens never change.
+- **Candidates.** At every still-masked position, the candidate is the greedy argmax
+  of the aligned float32 logits over the **allowed** set. Excluded: `<M>`, every
+  special added token of the pinned tokenizer (this includes pad = EOS), and IDs ≥
+  the tokenizer size (151,666; output rows up to 151,935 have no token). There are no
+  per-slot numeric or grammar constraints: any ordinary vocabulary token may be
+  chosen, and the checker counts non-numeric tokens as malformed.
+- **Commit order.** Masked positions are ranked by the **raw** temperature-1
+  probability of their selected candidate: softmax over the full, unrestricted output
+  vocabulary in float32. The restricted policy probability (softmax over the allowed
+  set) is stored separately and is not used for ranking. The top K_s − K_{s−1} are
+  revealed.
+- **Ties.** Equal maximal candidate logits pick the smallest token ID. Equal position
+  scores (exact float32 equality) pick the smallest position index first.
+- **Observation.** Each forward pass can be shown to an optional observer
+  (call index, current token state, the float32 aligned logits, the commit events).
+  The observer's return value is ignored, so milestone 4 can read log q from the
+  commitment forward pass without rerunning generation. The full draft bank is not
+  built here.
+- **Accounting.** Every batched forward is counted, and per example the number of
+  forwards in which it took part (= T). A `T = L` reference (one token per call) is
+  supported by grouping examples by length.
+- **Determinism.** Greedy selection uses no random draws.
+- **Traces** record, per call, the revealed positions, tokens, raw and policy log
+  probabilities, the mask fraction before the call, and the full response state.
+
+**D-030 (2026-11-17) Precision, trainable parameters and optimizer for the warmup and
+the main arms; resolves Q-3 and closes D-009 for training. Chosen before the common
+warmup, from measurements on the M2 Max (MPS). No A100 measurement exists, so the
+A100 parts of this entry are device-dependent and unmeasured.**
+- **Full fine-tuning, float32 parameters, no autocast.** All 494,032,768 parameters
+  are trainable, with the embedding tied to `lm_head`. This is fixed for the warmup and
+  for every main weighting arm.
+- Evidence (`docs/verification.md`, "Milestone 3"):
+  1. bf16 autocast is supported on MPS and passes the pre-declared screening
+     tolerances. Loss relative difference 7e-4; argmax agreement 98.8%; global
+     gradient relative L2 0.024; cosine 0.9997.
+  2. bf16 autocast is **slower** than fp32 on this device: 3.16 vs 2.92 s/update at
+     16 × ~135 tokens.
+  3. Pure bf16 parameters fail the argmax-agreement tolerance (97.7% < 98%) and are
+     not faster.
+  4. LoRA (r = 16, α = 32, all seven projection types, 8,798,208 trainable) is only
+     about 13% faster than full fine-tuning (2.55 vs 2.92 s/update) and saves memory
+     that is not binding on a 64 GB machine (Metal driver maximum 15.1 vs 21.8 GB).
+     Full fine-tuning avoids an adapter-capacity confound and needs no extra
+     hyperparameters.
+- **Optimizer (ENGINEERING DEFAULTS, not paper-mandated).** AdamW (non-foreach),
+  lr 3e-5, betas (0.9, 0.999), eps 1e-8, weight decay 0.01 on all trainable tensors.
+  Linear warmup over 20 updates, then constant: a constant phase lets a bounded run be
+  extended without redefining a decay horizon. Gradient-norm clipping at 1.0 (as in the
+  upstream Open-dLLM configs). Gradient accumulation 1 (D-028).
+- **Physical batch 32 for the common warmup.** Throughput per example is flat between
+  16 and 32 (5.5 vs 5.4 examples/s), so 32 sees about twice the data within the
+  1,000-update cap. The estimate is 1,000 × about 5.9 s ≈ 98 min, inside the two-hour
+  cap. The Gate C overfit uses batch 16 on its 32 examples (a wiring check).
+- **A100 (unmeasured).** The same fp32 full-fine-tuning policy is expected to fit:
+  analytic weights + gradients + AdamW ≈ 7.9 GB plus activations. Any bf16 or TF32 use
+  there needs its own comparison and a new entry, and must be identical across arms.
+  Throughput on the A100 is an extrapolation until measured.
+
+**D-031 (2026-11-17) Validation calibration protocol and setting-selection rule.
+Recorded while the common warmup was running, before any post-warmup validation
+result had been read.**
+- **Model.** The final checkpoint of the common warmup (`warmup-pilot-v1`, whichever
+  update it reaches within D-030's limits). It is identified by its model sha256 and its
+  training data identity: pilot manifest `990ecd1d…1536`, train split. The pretrained
+  model's validation behaviour is taken from the warmup's update-0 evaluation, not
+  from a separate screen.
+- **Data.** The pilot `val` split only, verified against the same manifest. `test_id`,
+  `test_long` and `test_unseen` are not loaded (`dlmc calibrate` refuses them). Each
+  setting's examples are its first n in file order, so the screen's examples are a
+  subset of the stage-2 examples.
+- **Sampler and budgets.** D-029, T ∈ {1, 2, 4, 8} plus T = L. These are calibration
+  settings, not the frozen experimental budget.
+- **Stage 1 (screen).** All 18 pilot settings (2 families × lengths {2, 4, 6} × digits
+  {1, 2, 3}), 32 problems each, all five budgets.
+- **Stage 2 (200 problems per selected setting), at most 5 settings per family.**
+  Selection uses only stage-1 final-answer accuracy:
+  1. the easiest setting (length 2, digits 1), always kept so that
+     already-correct/preservation cases exist;
+  2. the hardest setting (length 6, digits 3);
+  3. the remaining slots go to settings where some budget in {1, 2, 4, 8} has
+     final-answer accuracy in [0.40, 0.85]. They are ranked by the smallest distance
+     |acc − 0.625| over those budgets, with ties broken by (length, digits) ascending.
+     If fewer qualify, the middle setting (length 4, digits 2) fills one slot.
+  The 40–85% band is a heuristic for where a correction task is likely to be
+  informative. It is not a target, and weights are never altered to reach it.
+- **Reported metrics.** Final-answer, value, token and trace accuracy; malformed rate
+  and reasons; value errors per response; calls per example; and model seconds. These
+  are broken down by family, setting and budget.
+- **Dataset change rule.** The pilot dataset is kept unless the screen shows a family
+  that is useless for correction at every budget, i.e. either ≥ 98% final-answer
+  accuracy in every setting (no errors to correct) or < 5% at T = L in every setting
+  (no near-misses). A change needs a new data config, new manifests and a new entry.
+  Every checkpoint keeps recording the manifest it was trained on and the one it was
+  evaluated on. The final primary budget is chosen later (milestone 4 or 5), not here.
+
+**D-032 (2026-11-17) Outcome of the milestone-3 warmup and calibration; engineering
+memory rule.** Recorded after the runs, from `docs/verification.md`, "Common warmup"
+and "Validation calibration".
+- **Dataset kept.** Under D-031's rule neither family is uniformly ≥ 98% or < 5% at
+  T = L. The provisional pilot dataset (manifest `990ecd1d…1536`) therefore stays,
+  with no new manifest. The D-019 "provisional" label stays until the primary budget
+  and the milestone-4 diagnostics confirm the grid.
+- **Provisional common-warmup checkpoint:** `runs/train/warmup-pilot-v1/checkpoints/
+  ckpt-0001000`, model sha256
+  `f48abe457d483b19b854e1fdf6be4bb294c702f949f9d76d7c44a2274b0d5a6a`, trained on the
+  pilot train split. It reached the 1,000-update cap while validation loss and
+  accuracy were still improving, and the gradient was clipped on every update. Before
+  milestone 4 freezes a generator from it, the user should decide whether to (a) use
+  it as is, or (b) continue it with `--resume` under a larger update cap. Option (b)
+  changes only `limits`, which is resume-mutable, so the optimizer state, data order
+  and masks continue exactly. Either choice must be recorded in a new entry together
+  with the checkpoint hash.
+- **Primary budget not chosen.** The calibration cells inside the 40–85% heuristic
+  band are listed in `verification.md`. They inform the choice but do not make it.
+- **Memory rule (engineering only, no effect on the mathematics).** On MPS the
+  allocator cache is released after every training update, after every evaluation and
+  after every generation batch (`release_cache_every`, default 1; resume-mutable).
+  Without this, varying padded shapes made the cache grow until the machine swapped.
+  The rule changes timing and memory, not losses: identical losses at matching
+  updates were observed with and without it.

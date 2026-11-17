@@ -243,7 +243,20 @@ confidence-weighted training.
 | Five splits, de-duplicated by normalized problem plus inputs, explicit held-out compositions, hashed manifest (§5) | `data/splits.py`, `configs/data/*.yaml` | TESTED LOCALLY |
 | Verification rebuilds composition signature, held-out status and problem identity from source (advisor review; D-024) | `data/structure.py`, `splits.verify_dataset` | TESTED LOCALLY |
 | inspect-example (§12) | `data/inspect.py`, `dlmc inspect-example` | TESTED LOCALLY (fields from milestones 4–5 print n/a) |
-| Difficulty-calibration command (§5) | n/a | not started (milestone 3) |
+| Difficulty-calibration command (§5) | `evaluation/calibrate.py`, `dlmc calibrate` (milestone 3) | TESTED ON REAL BACKBONE |
+
+### Milestone 3 (§4 runtime pilot, §6 warmup, §11 Gate C, §5 calibration)
+
+| Requirement | Implementation | Status |
+| --- | --- | --- |
+| Mask policy recorded before training; per-example clamped-uniform t, Bernoulli response-only masking, pooled CE, zero-mask skip (D-028) | `training/masking.py`, `training/trainer.py::train_step` | TESTED LOCALLY + used on real backbone |
+| Separate reproducible RNG streams (data order, train masks, eval) | `training/rng.py` | TESTED LOCALLY + TESTED ON REAL BACKBONE (eval at update 0 leaves the training losses unchanged) |
+| Training from verified dataset files only | `training/data.py::load_verified_examples`, `run.prepare_trainer` (`verify_dataset`) | TESTED LOCALLY + REAL |
+| Full fine-tuning vs. LoRA, bf16 vs. fp32, timing/memory pilot (§4) | `training/lora.py`, `evaluation/benchmark.py`, `evaluation/precision.py` | TESTED ON REAL BACKBONE (MPS) |
+| Resumable atomic checkpoints, compatibility checks, durable copy (§6) | `training/checkpoint.py`, `Trainer.save/resume`, `find_resume_checkpoint` | TESTED LOCALLY + TESTED ON REAL BACKBONE |
+| Monotone sampler with call counting, traces, observer hook (D-029) | `sampling/monotone.py` | TESTED LOCALLY + TESTED ON REAL BACKBONE |
+| Gate C overfit and resume trajectory (§11) | `configs/train/overfit32.yaml`, `resume_check.yaml`, `evaluation/compare.py` | passed (verification.md, "Gate C") |
+| Colab launcher using the same package | `notebooks/colab_runner.ipynb` | IMPLEMENTED (not run) |
 
 Not reused: the DeepMind Mathematics generator, GSM8K and TinyGSM (build prompt §5
 lists them as optional references). Our generators are written from scratch, so there
@@ -257,12 +270,14 @@ is no third-party data or code to attribute.
 - **Q-2** *(resolved by D-018)* Open-dCoder's EOS = pad = 151643. Responses have a
   public fixed length and contain no EOS. An EOS/pad ID inside a response is a
   malformed special token, and attention masks stay length-based.
-- **Q-8** *(new; before warmup)* Precise mask-rate sampling policy and zero-mask
-  handling for L_mask (D-017). Masking is response-only with the prompt fixed; that is
-  protocol, not part of Q-8 (D-026).
-- **Q-3** Which precision for MPS training? Only float32 was exercised. bf16 on MPS
-  is untested, and a short memory/runtime pilot is required before choosing full
-  fine-tuning vs. LoRA (build prompt §4).
+- **Q-8** *(resolved by D-028)* Precise mask-rate sampling policy and zero-mask
+  handling for L_mask (D-017). Upstream's clamped-uniform rate is kept, but drawn per
+  example with Bernoulli masking of response tokens only. Zero-mask examples are kept,
+  and all-zero minibatches skip the optimizer step.
+- **Q-3** *(resolved for MPS by D-030)* Precision and trainable parameters. bf16
+  autocast passes the screening tolerances on MPS but is slower; pure bf16 parameters
+  fail argmax agreement. The choice is fp32 full fine-tuning. The A100 is still
+  unmeasured, and any precision change there needs its own comparison and entry.
 - **Q-4** ProSeCo corrector input on a non-copy-over backbone: argmax at all
   positions (paper) vs. argmax only at masked positions (code default)?
 - **Q-5** SCOPE commit confidence: max probability vs. probability of the sampled token?

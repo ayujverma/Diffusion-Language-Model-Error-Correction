@@ -1,13 +1,15 @@
 # Handoff for a fresh session
 
-As of 2026-11-17. **Milestones 1 and 2 are complete and closed as software.**
-The milestone-1 advisor follow-ups and the milestone-2 source-review gap (D-024) are
-closed. Milestone 3 has **not** been started.
-No model has been trained or evaluated on the tasks, and no accuracy has been
-measured. This file should be enough to continue. The detailed records are in
-`docs/decisions.md`, `docs/verification.md`, `docs/source_audit.md`,
-`docs/implementation_plan.md` and `docs/data_format.md`; if they disagree with this
-file, they win.
+As of 2026-11-17. **Milestones 1, 2 and 3 are complete.** Milestone 3 (masked warmup
+and difficulty calibration) was completed on the local M2 Max: its software is
+TESTED ON REAL BACKBONE, Gate C passed, the bounded common warmup ran to its cap, and
+the validation-only calibration is done. The common warmup **reached its 1,000-update
+cap while still improving**. Whether to extend it before milestone 4 freezes a
+generator is an open user decision (D-032). Milestone 4 has **not** been started.
+No experimental arm has been trained, and no test split has been evaluated. This
+file should be enough to continue. The detailed records are in `docs/decisions.md`,
+`docs/verification.md`, `docs/source_audit.md`, `docs/implementation_plan.md` and
+`docs/data_format.md`; if they disagree with this file, they win.
 
 ## 1. Inputs (full spec, stored in the repo)
 
@@ -19,8 +21,8 @@ file, they win.
   reader fails on it, so extract the text with `pypdf` in a throwaway environment.
 
 Both are byte-identical copies of the originals (sha256 values in D-013). Read the
-build prompt before writing code. Sections 4, 6, 7, 11 (Gate C) and 12 govern
-milestone 3.
+build prompt before writing code. Sections 8 (draft bank), 9 (signals), 11 (Gate D)
+and 12 govern milestone 4.
 
 ## 2. Project summary
 
@@ -63,9 +65,11 @@ stay optional.
 
 **Rules.**
 - Do not change the question or drop arms; record conflicts in `decisions.md`.
-- Do not launch warmup on real data, draft collection, the grid, or paid hardware
-  without the user's go-ahead. Do not invent results. Do not claim any accuracy
-  range (such as the proposal's 40–85% target) until it has been measured.
+- Do not launch draft collection, correction training, the grid, a longer warmup,
+  or paid hardware without the user's go-ahead. Do not invent results. The 40–85%
+  band is a heuristic, not a target; never alter weights to manufacture errors.
+- Never evaluate `test_id`, `test_long` or `test_unseen` for any selection decision
+  (`dlmc calibrate` refuses them).
 - Label every result IMPLEMENTED / TESTED LOCALLY / TESTED ON REAL BACKBONE /
   EXPERIMENT COMPLETED. Keep software verification separate from scientific results.
 - No credentials in the repo.
@@ -79,54 +83,47 @@ stay optional.
 | Milestone | Status |
 | --- | --- |
 | 1: source audit, adapter, losses, gradient checks | DONE |
-| Milestone-1 advisor follow-ups (gradient equivalence, loading/tying, D-006 clarification, two wording fixes) | DONE (D-016, D-017; `verification.md`, "Milestone-1 follow-ups") |
-| 2: tasks, format, checker, splits, inspect-example | DONE and closed as software (D-018 to D-021; review gap closed by D-024). Pilot task grid is **provisional** (D-019) |
-| 3: warmup and difficulty calibration | **next**; not started |
+| Milestone-1 advisor follow-ups | DONE (D-016, D-017) |
+| 2: tasks, format, checker, splits, inspect-example | DONE and closed as software (D-018 to D-021, D-024). Pilot grid still labelled provisional (D-019, D-032) |
+| 3: masked warmup and difficulty calibration | **DONE** (D-028 to D-032). Software TESTED ON REAL BACKBONE; Gate C passed; warmup ran to its 1,000-update cap (not converged); validation calibration done; pilot dataset kept |
 | 4 to 8 | not started |
 
-## 4. Next milestone (3): what to do, in order
+**Milestone-3 completed items:**
+- Mask policy (D-028), sampler policy (D-029), precision and trainable parameters
+  (D-030) and the calibration protocol (D-031), each recorded before its code or run.
+- Trainer with atomic, resumable checkpoints and a verified durable copy.
+- Precision check, timing pilot, and LoRA vs. full fine-tuning feasibility runs.
+- Gate C: the overfit reached 100% trace accuracy at update 250; the resume
+  trajectory falls within the device noise floor, including a restore from the
+  durable copy.
+- Common warmup `warmup-pilot-v1`: 1,000 updates, 5,790 s.
+- Calibration: an 18-setting screen, then 10 settings × 200 val problems × 5 budgets.
+- `paper/methods.md` draft (no results).
 
-Full list in `docs/implementation_plan.md`.
+**Milestone-3 incomplete or deferred items:**
+- The warmup is not converged. Whether to extend it is the user's decision, D-032;
+  the command is in §6.
+- The final primary budget is not chosen (deferred to milestone 4/5 by D-031).
+- The Colab launcher has not been run; no A100 measurement exists.
+- No human review.
 
-1. **Write a decision entry for the mask policy before any warmup** (D-006, D-017,
-   D-026; open question Q-8).
-   - Masking is response-only with the prompt fixed. This is protocol (D-026), not a
-     choice.
-   - The entry must fix the precise mask-rate sampling. Upstream draws, per packed
-     sequence, u ~ U(0, 1) and sets t = clamp(u, 1/500, 1 − 1/500). That is a
-     clamped uniform with probability 1/500 at each endpoint, not a uniform draw on
-     [1/500, 1 − 1/500]. The entry must also choose Bernoulli vs. exact-count masking.
-   - It must fix zero-mask handling. Upstream returns a loss of 0; the options are to
-     resample or to force one mask.
-   - Keep the pooled masked-token CE, with no 1/t weight and no path term.
-2. **Memory/runtime pilot on MPS:**
-   - Compare full fine-tuning with LoRA, and bf16 with fp32 (Q-3).
-   - Record measured seconds per step and per example. This is the early runtime
-     estimate required by D-022.
-   - A100 use needs the user's approval.
-   - Fix the trainable-parameter policy for all arms.
-3. **Trainer:**
-   - Resumable checkpoints covering model, optimizer, scheduler, RNG and data order.
-   - JSONL metrics and provenance.
-   - Reads the verified splits through `data.splits.load_split`.
-4. **Monotone unmasking sampler:**
-   - Resolve the reveal schedule, tie-breaking and commit-confidence rule in a
-     decision entry **before** writing the code (D-022).
-   - Constraints (D-027): training responses have 10, 20 or 30 editable tokens.
-     Use only feasible integer reveal schedules (at least one reveal per call, no
-     mask left at the end). Report the actual calls, and never add no-op calls to
-     match a budget.
-   - Count model calls and record traces.
-5. **Gate C:** overfit 16–32 examples; checkpoint/resume reproduces the losses.
-6. **Difficulty calibration:**
-   - Run on validation only, 200–500 problems per setting, scored with
-     `data.checker.aggregate`.
-   - Record the chosen settings. If the grid changes, regenerate the data (new
-     manifest hash).
-   - The proposal's target accuracy range is a goal, not a result.
-7. Start writing the methods section from the verified code.
+## 4. Next milestone (4): immutable draft bank and signal diagnostics
 
-Minimal complete-draft repair stays in **milestone 5** (D-022).
+Full list in `docs/implementation_plan.md`. First, get the user's decision on the
+generator checkpoint (D-032: use `warmup-pilot-v1/ckpt-0001000` as is, or extend the
+warmup). Record it in a new entry together with the model sha256. Then:
+1. Freeze a generator copy. Collect drafts with the D-029 sampler through its
+   observer hook (`sampling.monotone.monotone_unmask(..., observer=...)`): per
+   committed token, the commit call, the mask fraction, and float32 log c and log q
+   from the **same** forward pass. The observer receives the aligned float32 logits
+   before the commit, and its return value is ignored.
+2. Gate D observer checks: changing reference targets changes only analysis fields,
+   never tokens or calls.
+3. Bank validation and hashes; separate validation and test banks.
+4. Signal diagnostic: c, −log q and step-0 correction loss by budget, stage, position
+   and difficulty.
+The budget used for bank collection must be chosen and recorded first. The
+calibration table (`verification.md`) is the input to that choice.
 
 ## 5. Files
 
@@ -149,8 +146,20 @@ Minimal complete-draft repair stays in **milestone 5** (D-022).
 | `cli.py`, `env.py` | `dlmc doctor`, `download-backbone`, `generate-data`, `verify-data`, `inspect-example`; provenance |
 | `configs/data/smoke.yaml`, `pilot.yaml` | Data configs (the pilot is provisional) |
 | `scripts/reference_logits.py`, `reference_gradients.py`, `reference_tokenizer.py` | Upstream / transformers references; run in `.venv-ref` |
+| `training/rng.py`, `masking.py` | Named CPU RNG streams (data_order, train_mask, eval); D-028 mask sampling |
+| `training/data.py` | `load_verified_examples` (manifest and split hashes), `select_subset`, `select_per_setting`, `EpochSampler`, `collate_targets` |
+| `training/lora.py` | `LoRALinear`, `apply_lora` (freezes the base), adapter state I/O |
+| `training/checkpoint.py` | Atomic checkpoint directories with `COMPLETE.json` hashes, `latest`, pruning, `copy_to_durable` (verified) |
+| `training/config.py`, `model_io.py`, `run.py`, `trainer.py` | Config defaults and resume-compatibility hash; model building and loading; `Trainer` (step, eval, save, resume, train loop) |
+| `sampling/monotone.py` | D-029 sampler: `reveal_schedule`, `allowed_token_mask`, `monotone_unmask` (observer, traces, call counts) |
+| `evaluation/generation.py`, `calibrate.py` | Grouped generation plus checker scoring; validation-only calibration with traces |
+| `evaluation/benchmark.py`, `precision.py`, `compare.py` | Timing/memory pilot; bf16 vs. fp32 check; run-trajectory comparison |
+| `configs/train/*.yaml` | `warmup_pilot.yaml` (common warmup), `overfit32.yaml` (Gate C), `resume_check.yaml` (Gate C) |
+| `notebooks/colab_runner.ipynb` | Thin CUDA launcher for the same commands (not run) |
+| `scripts/gatec_inspect.py`, `select_calibration_settings.py`, `mutation_check_m3.py` | Gate C inspection; D-031 stage-2 selection; milestone-3 mutation check |
+| `paper/methods.md` | Methods draft from verified code |
 
-Tests (180 in total with MPS available):
+Tests (216 in total with MPS available; 215 inside the sandbox):
 
 | File | Tests | Notes |
 | --- | --- | --- |
@@ -162,6 +171,7 @@ Tests (180 in total with MPS available):
 | `test_data_format.py` | 48 | |
 | `test_data_structure.py` | 34 | hand-specified signatures, structure rejections, identity |
 | `test_data_splits.py` | 20 | includes 9 tamper tests with re-hashed manifests |
+| `test_masking.py`, `test_sampler.py`, `test_trainer.py`, `test_sampler_real.py` | 36 | milestone 3; `test_sampler_real.py` is `real_backbone` (8 such tests in total) |
 
 68 tests carry the `tokenizer` marker.
 
@@ -174,8 +184,8 @@ hides MPS and blocks the Hub, so use full permissions for those commands.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # pinned: requirements-lock.txt; no transformers (D-008)
 .venv/bin/dlmc download-backbone                              # -> runs/hf/open-dcoder-0.5B, sha256-verified
-.venv/bin/python -m pytest -q                                 # expect 180 passed (179 inside the sandbox: no MPS case)
-.venv/bin/python -m pytest -q -m "not real_backbone and not tokenizer"   # 105, no assets needed
+.venv/bin/python -m pytest -q                                 # expect 216 passed (215 inside the sandbox: no MPS case)
+.venv/bin/python -m pytest -q -m "not real_backbone and not tokenizer"   # 140, no assets needed
 .venv/bin/dlmc doctor --backbone open-dcoder --device mps     # ~10 GB of memory
 .venv/bin/dlmc generate-data --config configs/data/pilot.yaml  # -> runs/data/pilot-seed20261116 (verifies itself)
 .venv/bin/dlmc verify-data --data-dir runs/data/pilot-seed20261116
@@ -194,12 +204,67 @@ PYTHONPATH=runs/sources/Open-dLLM:src .venv-ref/bin/python scripts/reference_gra
 PYTHONPATH=src .venv-ref/bin/python scripts/reference_tokenizer.py --data-dir runs/data/pilot-seed20261116
 ```
 
+Milestone-3 commands. MPS needs full permissions. Run long jobs as tool-managed
+background commands: `&`/`nohup` inside a sandboxed shell call were killed silently.
+
+```bash
+H=990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536
+# Gate C
+.venv/bin/dlmc train --config configs/train/overfit32.yaml --device mps
+.venv/bin/python scripts/gatec_inspect.py --checkpoint runs/train/gatec-overfit32/checkpoints/ckpt-0000250 --device mps
+# common warmup (as run); resume after any interruption with the same command plus --resume auto
+.venv/bin/dlmc train --config configs/train/warmup_pilot.yaml --device mps --run-dir runs/train/warmup-pilot-v1 [--resume auto]
+# OPTIONAL, needs the user's go-ahead (D-032): continue the same warmup to e.g. 2000 updates;
+# limits are resume-mutable, so optimizer, data order and masks continue exactly
+.venv/bin/dlmc train --config configs/train/warmup_pilot.yaml --device mps --run-dir runs/train/warmup-pilot-v1 \
+    --resume auto --max-updates 2000 --max-wall-seconds 14400
+# calibration (validation only)
+.venv/bin/dlmc calibrate --checkpoint runs/train/warmup-pilot-v1/checkpoints/ckpt-0001000 --data-dir runs/data/pilot-seed20261116 \
+    --manifest-sha256 $H --split val --settings all --n-per-setting 32 --budgets 1,2,4,8,L --out runs/calibration/screen-warmup1000
+.venv/bin/python scripts/select_calibration_settings.py runs/calibration/screen-warmup1000/summary.json
+```
+
+Note that `--max-wall-seconds` is cumulative across resumes: `train_wall_seconds` is
+stored in the checkpoint, and the first run used 5,790 s. On Colab, use
+`notebooks/colab_runner.ipynb`; `--durable-dir` copies each checkpoint to Drive, and
+`--resume auto` copies the latest one back if the local disk was wiped.
+
+Hardware limits (measured): fp32 full fine-tuning at batch 32 uses about 30 GB of
+Metal driver memory with the per-update cache release, and about 5.0 s per update
+(5.8 s/update including evaluation and checkpoints). Each full checkpoint is about
+5.9 GB (weights plus AdamW state) and takes about 10 s to save. Generation at
+T = L is the slowest evaluation: about 1.5 s per call for a batch of 50 with L = 30
+(about 3 minutes per 200 problems).
+
 ## 7. Evidence (software verification only; no scientific results exist)
 
 Details and tables are in `docs/verification.md`.
 
-**Tests.** `pytest`: 180 passed outside the sandbox. Inside it, 179 pass, because
-MPS is hidden and the MPS case is not collected.
+**Tests.** `pytest`: 216 passed outside the sandbox. Inside it, 215 pass, because
+MPS is hidden and the MPS case is not collected. The milestone-3 mutation check
+catches 12/12 mutants.
+
+**Milestone 3 (details and tables in `verification.md`, "Milestone 3"):**
+- Precision on MPS: bf16 autocast passes the tolerances but is slower; pure bf16
+  fails argmax agreement (0.977 < 0.98). Decision: fp32 (D-030).
+- Timing: full fine-tuning at batch 32 on the longest setting runs at 5.88 s/update
+  (5.44 examples/s); LoRA at batch 32 at 4.61 s/update. LoRA has 8,798,208 trainable
+  parameters, verified.
+- Gate C overfit: 32 examples. At update 250, masked loss 0.0007 and 100% trace
+  accuracy at T = L and T = 2. Predictions inspected (p(target) ≥ 0.9977). All 290
+  tensors move under full fine-tuning. One LoRA step changes all 168 `lora_B` tensors
+  and leaves all 290 base tensors bitwise unchanged.
+- Gate C resume: uninterrupted vs. interrupted-and-resumed (restored from the durable
+  copy after the local checkpoints were deleted). Example IDs, masks and learning
+  rates are identical. Loss relative difference 4.1e-7 and parameter divergence
+  2.1e-5 of the update norm, both below the uninterrupted-repeat noise floor (3.9e-6,
+  4.2e-5).
+- Common warmup: 1,000 updates, 5,790 s, no zero-mask batches. Monitor (144 val
+  problems) at T = L: final 0% → 38.9%, malformed 100% → 0%. Val masked loss 3.878 →
+  0.591, still falling. The gradient was clipped on every update.
+- Calibration (200 val per selected setting): final accuracy ranges from 0.91
+  (arithmetic 2/1, T = L) down to 0.02 (programs 6/3, T = L). More calls always help.
+  The only malformed reason is `negative_zero`.
 
 **Forward pass.** Our raw logits equal upstream `veomni` exactly (max |diff| 0.0,
 fp32, CPU).
@@ -256,6 +321,22 @@ above.
 | `runs/data/pilot-seed20261116/` | pilot dataset; manifest sha256 `990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536`; includes `tokenizer_reference_check.json` |
 | `runs/inspect/*.txt`, `*.json` | inspect-example outputs |
 | `runs/doctor/*.json` | doctor records |
+| `runs/benchmark/precision_mps.json`, `pilot_mps.{json,log}` | precision check, timing pilot |
+| `runs/train/feas-full-20`, `feas-lora-20` | 20-update feasibility runs (5.5 GB and 0.1 GB) |
+| `runs/train/gatec-overfit32/` | Gate C overfit; `ckpt-0000250` model sha256 `e278dcfd090101f555cd86762a8b81be049996a9e0a235e3ce32f5a8b07313b7` |
+| `runs/gatec/inspect/`, `runs/gatec/compare-*.txt` | Gate C inspection and resume comparisons |
+| `runs/train/resume-{A,A2,B}`, `runs/durable/resume-B` | Gate C resume runs and the durable copy |
+| `runs/train/warmup-pilot-v1/` | **common warmup**; `ckpt-0001000` model sha256 `f48abe457d483b19b854e1fdf6be4bb294c702f949f9d76d7c44a2274b0d5a6a`, optimizer `ae55b39481da056d6b4180cd0197a732efecaece7b17c0d0eab52aa0fbfa99af`; `ckpt-0000900` also kept; trained on pilot train, monitored on pilot val |
+| `runs/train/warmup-pilot-v1.{oom,swap}-attempt` | failed attempts (17 and 59 updates, no checkpoints), kept for the record |
+| `runs/calibration/screen-warmup1000/` | stage-1 screen (18 settings × 32 × 5 budgets), selection output |
+| `runs/calibration/stage2-warmup1000/` | stage-2 calibration (10 settings × 200 × 5 budgets): `summary.{json,md}`, `records.jsonl`, `traces.txt` |
+| `runs/calibration/stage2-warmup1000.swap-attempt` | stopped stage-2 attempt (identical accuracies; inflated timings) |
+
+There is no backup of these runs: no durable directory was configured locally, and
+only the Gate C test copy in `runs/durable/` exists. Together they take about 66 GB
+(`runs/train` 55 GB, `runs/durable` 11 GB).
+The resume-check and feasibility runs can be deleted once they are no longer needed
+as evidence.
 
 **Pinned revisions.**
 
@@ -271,41 +352,40 @@ above.
 ## 8. Risks, unresolved choices, and checks not run
 
 **Risks:**
-- **The pilot task grid is a guess** (D-019). The proposal's accuracy target
-  is untested. Calibration may change lengths or digits, which means regenerating
-  the data under a new manifest hash.
+- **The warmup is not converged** (D-032). A generator frozen now would be weaker
+  than a longer warmup would give. This is a user decision before milestone 4.
+- **The hardest pilot settings are near 0%** (length 6 with 3 digits: ≤ 2.5% at every
+  budget), and wrong responses there contain about 4.8 wrong values. Those settings
+  may give the correction arms little to work with. The pilot grid stays provisional
+  (D-019); any regeneration needs a new manifest and entry.
 - **The value-only format has no variable names in the response.** A model must
-  track slot order. If calibration shows this is the main failure mode, revisit it
-  through a superseding decision, not an edit.
-- **Response-only masking differs from upstream.** Upstream's collator masks whole
-  packed sequences, while the protocol masks only response tokens and keeps the
-  prompt fixed (D-026). Response tokens make up 13–30% of each pilot sequence
-  (sequences are 59–230 tokens). This is a settled, documented difference, not an
-  open choice.
-- **Runtime is unknown.** No training step has been timed on the pilot sizes.
+  track slot order. If this turns out to be the main failure mode, revisit it through
+  a superseding decision, not an edit.
+- **Response-only masking differs from upstream** (D-026). This is settled.
+- **MPS allocator cache growth** made the machine swap until the cache was released
+  per update or batch (D-032). Any new long-running loop that varies shapes must call
+  `env.release_cached_memory`.
 - **Normalized keys miss commuted or semantically equal programs** (a documented
   limitation).
 
 **Unresolved choices:**
-- D-006/D-017/D-026 (Q-8): the precise mask-rate sampling and zero-mask handling.
-  Settle before warmup.
-- D-009 / Q-3: precision (bf16 untested), and LoRA vs. full fine-tuning.
+- D-032: extend the warmup or not; then the bank-collection budget and the primary
+  budget.
 - D-011: β = 0.5 and the bin edges.
 - D-012: λ and μ.
-- The monotone sampler's reveal schedule and tie-breaking.
 - Q-1: which liger version trained the base checkpoint.
 - Q-4: the ProSeCo corrector input.
 - Q-5: the SCOPE commit confidence.
 - Q-6: the ReMDM adaptation.
-- Q-7: whether near-zero L_keep is typical.
+- Q-7: whether near-zero L_keep is typical (measure in the milestone-4 diagnostic).
+(Resolved in milestone 3: Q-8 by D-028; Q-3 for MPS by D-030; sampler schedule and ties
+by D-029.)
 
 **Checks not run:**
-- Gate C (overfit, resume).
-- Gate D (samplers, observer, log c / log q same-pass).
+- Gate D (observer log c / log q same-pass, reference-independence of the bank).
 - ProSeCo/SCOPE stop-gradient fixtures.
-- bf16 on any device; any A100 run.
-- The memory/runtime pilot.
-- Any warmup, draft collection or experiment.
+- Any CUDA/A100 run, including the Colab launcher.
+- Any test-split evaluation, draft collection or experimental arm.
 - No human review of anything.
 
 ## 9. Git state
@@ -322,4 +402,6 @@ above.
 - `docs/handoff.md`, `docs/ai_usage.md` and the build prompt are tracked
   (D-023, D-025). Everything under `runs/` stays git-ignored: weights, datasets,
   reference and doctor outputs.
+- Milestone 3 is committed on `main` on top of `35b3282` as two commits: the code,
+  configs, notebook, scripts and tests; then the documentation.
 - Run `git log --oneline 8e00216..HEAD` for the current hashes.

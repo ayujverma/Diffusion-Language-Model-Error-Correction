@@ -95,3 +95,24 @@ Human checks:
 - The advisor reviewed source code and reported the verification gap; the user relayed
   that finding. This is recorded as the trigger for D-024. It is not a full human
   review of the code or tests, and no human has reviewed the fix.
+
+## 2026-11-17: Milestone 3, masked warmup and calibration (Cursor agent, Claude model)
+
+What the AI did:
+- Recorded the mask policy (D-028), the sampler policy (D-029), the precision and
+  trainable-parameter policy (D-030) and the calibration protocol (D-031). Each was
+  recorded before the code or the run it governs.
+- Wrote `training/` (masking, RNG streams, verified data loading, LoRA, atomic
+  checkpoints, config, trainer), `sampling/monotone.py`, `evaluation/` (generation
+  scoring, calibration, timing pilot, precision check, run comparison), the new CLI
+  commands, configs, the Colab launcher, `scripts/gatec_inspect.py`,
+  `scripts/mutation_check_m3.py`, the new tests and `paper/methods.md`.
+- Ran the precision check, the timing pilot, the feasibility runs, the Gate C overfit
+  and resume checks, the common warmup and the validation calibration on the local
+  M2 Max. It diagnosed two failed warmup attempts (an MPS out-of-memory error after
+  evaluation, then allocator-cache growth that caused swapping) and fixed them by
+  releasing cached memory. Both attempts are archived under `runs/train/`.
+- Wrote the documentation updates and committed at the user's request.
+
+Human checks:
+- None. No human has reviewed the milestone-3 code, the runs or the documents.
