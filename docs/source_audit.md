@@ -1,6 +1,7 @@
 # Source and implementation audit
 
-Milestone 1 deliverable. Written 2026-11-16. Every claim below cites what was read
+Milestone 1 deliverable. Written 2026-11-16; sections marked "added in milestone 2"
+were added in the second session the same day. Every claim below cites what was read
 or what was executed. "Verified by execution" means a command in
 `docs/verification.md` produced the stated output. Paper details that have **not**
 yet been checked against code are labelled as such.
@@ -102,6 +103,10 @@ as an adaptation.
 | `generation_config.json` says `mask_token_id: 151643` | This is `<|endoftext|>` (= pad = EOS). It contradicts every training and evaluation source above, so we treat it as stale and do not use it (D-003). A test asserts both facts |
 | pad = EOS = `<|endoftext|>` = 151643; no BOS (`bos_token: null`, `add_bos_token: false`) | tokenizer files; `config.json` `eos_token_id` |
 | Digits tokenize one digit per token; punctuation can merge with neighbours (`";b"` is one token) | Executed (`tests/test_open_dcoder.py::test_tokenizer_digits_are_single_tokens`). Fixed character width does not imply fixed token width, which matters for the milestone-2 layout |
+| *(added in milestone 2)* Sign merges depend on the neighbour: `"=-"` (10829), `",+"` (63454), `",-"` (4999) and `"(+"` are single tokens, while `"=+"` is two; `" +"` (488) and `" -"` (481) are single tokens; `"\n+"` is `"Ċ"` + `"+"` | Executed (`tests/test_data_format.py`). The pre-tokenizer regex (`tokenizer.json`) has a ` ?[^\s\p{L}\p{N}]+` branch, which joins runs of punctuation and allows one leading space. This is why the response format puts a space before every sign (D-018) |
+| *(added)* No printable single-character prompt ending merges with a following `" +"`/`" -"` | Executed (`test_leading_space_sign_never_merges_with_any_prompt_ending`) |
+| *(added)* The `tokenizers` wrapper, transformers' `Qwen2TokenizerFast`, and the slow pure-Python `Qwen2Tokenizer` (vocab.json + merges.txt) give identical IDs on 83,713 strings | Executed (`scripts/reference_tokenizer.py`, pilot data). The slow tokenizer does not read `tokenizer.json`, so this is an independent check of the BPE |
+| *(added)* The output vocabulary is 151,936 rows, but the tokenizer has 151,666 tokens; IDs 151,666 and above have no token | `config.json` vs. `tokenizer.get_vocab_size(with_added_tokens=True)`. The checker reports such IDs as `unknown_token_id` |
 
 ### 2.4 Upstream training objective (what we deliberately do not inherit)
 
@@ -124,7 +129,28 @@ released CDLM 0.5B checkpoint was trained this way. Open-dLLM pins
 Open-dCoder checkpoint, and so whether its path term was effectively applied.
 
 Our losses use plain PyTorch `log_softmax` + `gather`. Our masked loss has no path
-term and no 1/t weight (D-006).
+term and no 1/t weight (D-006, clarified by D-017).
+
+*Added in milestone 2 (read in `veomni/models/transformers/qwen2/modeling_qwen2.py`
+lines 1036–1057 and `veomni/data/data_collator.py` lines 158–214, Open-dLLM `5b9ba4d`):*
+- The plain term is `mdm_loss = (token_loss * loss_mask).sum() / (loss_mask.sum() + 1e-8)`
+  over the flattened (packed) micro-batch. It is therefore a **pooled** mean over all
+  masked tokens, the same estimator as our L_mask. With no masked token it is 0.
+- The collator draws one `mask_ratio = rand(1).clamp(1/500, 1 − 1/500)` per packed
+  sequence and masks each token independently (`rand_like(ids) < mask_ratio`). Labels
+  are kept only where the input is `<M>`. A sequence can therefore draw zero masked
+  tokens.
+- The upstream path without labels (`labels=None`) returns `lm_head(hidden_states)`
+  logits with no loss. That path was used for the gradient comparison (D-016).
+
+### 2.5 Upstream numeric casts (added in milestone 2)
+
+Upstream `Qwen2RMSNorm.forward` always casts hidden states to float32, and
+`Qwen2RotaryEmbedding.forward` always computes cos/sin in float32 (lines 278–283 and
+386–405), whatever the activation dtype. Ours does the same for bf16/fp16 and float32,
+but keeps float64 in float64. This is the only cause of the 2.7e-6 to 5.4e-6
+float64 gradient differences: matching both casts gives 3.4e-15 (V, "Milestone-1
+follow-ups").
 
 ## 3. Prior methods: published rules vs. our adaptations
 
@@ -187,7 +213,7 @@ confidence. Our proposal weights *visible draft errors* by *saved generation-tim
 confidence. These are different, and the report must cite PAPL as related
 confidence-weighted training.
 
-## 4. Requirements implemented in milestone 1 and where
+## 4. Requirements implemented, and where
 
 | Requirement (build prompt §) | Implementation | Status |
 | --- | --- | --- |
@@ -204,15 +230,36 @@ confidence-weighted training.
 | L = L_mask + λL_error + μL_keep with safe empty sets (§7) | `losses/correction.py`, `losses/masked.py` | TESTED LOCALLY |
 | Rank weights, bins, midranks, normalisation, all 6 rules, diagnostics (§7) | `losses/weighting.py` | TESTED LOCALLY |
 | Gate B (§11) | `tests/test_losses.py`, `tests/test_weighting.py` | passed except items listed in verification.md |
+| *(follow-up)* Gradient equivalence with upstream under one external loss; complete loading and tying | `scripts/reference_gradients.py`; `test_checkpoint_loads_completely_and_embeddings_stay_tied` | TESTED ON REAL BACKBONE (D-016) |
+
+### Milestone 2 (§5, §11 Gate A data items, §12 inspect-example)
+
+| Requirement | Implementation | Status |
+| --- | --- | --- |
+| Arithmetic chains, 2/4/6 ops, 1–3 digits, +/−/×small, explicit bounds, exact values (§5) | `data/arithmetic.py` | TESTED LOCALLY |
+| Restricted program language plus deterministic interpreter, independently tested; no execution of model output (§5) | `data/programs.py` | TESTED LOCALLY |
+| Fixed-slot numeric format verified on the real tokenizer; token→value spans; layout independent of answers (§5) | `data/format.py`, `data/tasks.py` | TESTED LOCALLY (real tokenizer) |
+| Checker: token vs. value levels separate; malformed counted; no zipping or dropping (§5) | `data/checker.py` | TESTED LOCALLY |
+| Five splits, de-duplicated by normalized problem plus inputs, explicit held-out compositions, hashed manifest (§5) | `data/splits.py`, `configs/data/*.yaml` | TESTED LOCALLY |
+| Verification rebuilds composition signature, held-out status and problem identity from source (advisor review; D-024) | `data/structure.py`, `splits.verify_dataset` | TESTED LOCALLY |
+| inspect-example (§12) | `data/inspect.py`, `dlmc inspect-example` | TESTED LOCALLY (fields from milestones 4–5 print n/a) |
+| Difficulty-calibration command (§5) | n/a | not started (milestone 3) |
+
+Not reused: the DeepMind Mathematics generator, GSM8K and TinyGSM (build prompt §5
+lists them as optional references). Our generators are written from scratch, so there
+is no third-party data or code to attribute.
 
 ## 5. Unresolved questions
 
 - **Q-1** Which liger-kernel version trained the base Open-dCoder checkpoint? This
   determines whether the base model's path term was effectively applied. It does not
   affect our training (we use plain CE) but matters for describing the starting point.
-- **Q-2** Open-dCoder's EOS = pad = 151643. Our fixed-layout responses may not need
-  EOS at all. Decide in milestone 2 whether responses end with EOS, and keep
-  attention masks length-based in any case.
+- **Q-2** *(resolved by D-018)* Open-dCoder's EOS = pad = 151643. Responses have a
+  public fixed length and contain no EOS. An EOS/pad ID inside a response is a
+  malformed special token, and attention masks stay length-based.
+- **Q-8** *(new; before warmup)* Precise mask-rate sampling policy and zero-mask
+  handling for L_mask (D-017). Masking is response-only with the prompt fixed; that is
+  protocol, not part of Q-8 (D-026).
 - **Q-3** Which precision for MPS training? Only float32 was exercised. bf16 on MPS
   is untested, and a short memory/runtime pilot is required before choosing full
   fine-tuning vs. LoRA (build prompt §4).

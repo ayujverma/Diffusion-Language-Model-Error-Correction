@@ -18,48 +18,60 @@ TESTED ON REAL BACKBONE (Open-dCoder-0.5B), EXPERIMENT COMPLETED.
 - [x] Gate B tests (see `docs/verification.md` for what was and was not covered)
 - [x] `dlmc doctor` real forward/loss/backward/AdamW step: TESTED ON REAL BACKBONE (CPU fp32, MPS fp32)
 
-### Pending advisor follow-ups on milestone 1 (open)
+### Advisor follow-ups on milestone 1 (DONE 2026-11-16, second session)
 
-- [ ] Reference gradient comparison against upstream (logits already match; gradients were not compared)
-- [ ] Recorded confirmation of complete weight loading and the required embedding tying
-- [ ] Clarify D-006 (masked-loss contract) with a superseding decision entry
-- [ ] Correct the positive "log c" hand example and the CPU/MPS relative-error wording in `docs/verification.md`
+- [x] Reference gradient comparison against upstream with the same external loss, on a masked and a flawed-draft input: TESTED ON REAL BACKBONE (D-016)
+- [x] Recorded confirmation of complete weight loading and embedding tying (CPU and MPS): TESTED ON REAL BACKBONE
+- [x] D-006 clarified by D-017 (pooled masked-token CE; mask-rate policy and zero-mask handling still to be fixed before warmup)
+- [x] "log c" hand example and CPU/MPS wording corrected in `docs/verification.md`
 
-Details: `docs/verification.md`, "Pending advisor follow-ups"; `docs/decisions.md` D-014.
+## Milestone 2: tasks, data, inspect-example (DONE; closed 2026-11-17)
 
-## Milestone 2: tasks, data, inspect-example (next; not started)
+- [x] `data/arithmetic.py`: dependent chains, bounds, exact values; fixtures 2+3, 17+28 → (45, 135, 116), negative/zero: TESTED LOCALLY
+- [x] `data/programs.py`: restricted language, hand-written parser/interpreter, generator; checked against an independent `ast` evaluator: TESTED LOCALLY
+- [x] Canonical value-only fixed-slot format (D-018), checked on the real tokenizer; EOS question (Q-2) resolved; token→value spans stored: TESTED LOCALLY (real tokenizer)
+- [x] Checker with separate token/value/final/trace levels and an explicit malformed-output policy (D-020): TESTED LOCALLY
+- [x] Five splits, global de-duplication, held-out adjacent compositions, deterministic hashed manifest, `verify-data`, grouping helper for later drafts: TESTED LOCALLY
+- [x] `dlmc inspect-example` (milestone 4–5 fields print `n/a`): TESTED LOCALLY
+- [x] Gate A data items (see `docs/verification.md`, "Milestone 2")
+- [x] Smoke and pilot datasets generated and verified (pilot task grid is **provisional**, D-019)
+- [x] Advisor review gap closed: `verify-data` rebuilds signature, held-out status, normalized key and problem ID from source (`data/structure.py`, D-024); both existing datasets pass unchanged: TESTED LOCALLY
 
-1. `data/arithmetic.py`: dependent integer chains (2/4/6 operations; 1–3-digit
-   operands; +, −, × by bounded small integers), explicit magnitude/sign bounds,
-   exact intermediate values. Hand-checked fixtures, including 2+3 and the 17+28
-   example (45, 135, 116).
-2. `data/programs.py`: restricted assignment language plus deterministic
-   interpreter (2–6 assignments; bounded conditions later), with independent
-   interpreter tests. Never execute model-generated Python.
-3. Canonical fixed-slot response format. Verify the token layout against the real
-   tokenizer: digits are single tokens, but punctuation merges (e.g. `";b"`), so
-   choose separators whose tokenization is stable. Store token→value-span maps.
-   Decide Q-2 (EOS in responses).
-4. Checker: value-level and token-level correctness kept separate; malformed
-   outputs count as failures and are reported.
-5. Splits: train/val/test-ID/test-long/test-unseen-composition, dedup by
-   normalised problem, hashed manifest. Same-problem drafts stay in one split.
-6. `dlmc inspect-example`: one table showing prompt/response tokens, aligned
-   target, masks, and (later) c, q, −log q, bin, current p, weight, CE, weighted CE.
-7. Remaining Gate A data checks.
+Format spec: `docs/data_format.md`. Protocol: `docs/inputs/Cursor_Diffusion_LM_Build_Prompt.txt` (tracked, D-025).
 
-## Milestone 3: warmup and difficulty calibration
+## Milestone 3: warmup and difficulty calibration (next)
 
-1. Decide the masked-warmup mask-rate distribution (D-006) and the trainable-
-   parameter policy after a short real-model memory/runtime pilot on MPS and
-   (if available) A100. Full fine-tuning vs. LoRA is then fixed for all main arms.
-2. Trainer with resumable checkpoints (model, optimizer, scheduler, step, RNG,
-   data order), JSONL metrics, config/provenance capture.
-3. Ordinary monotone unmasking sampler (integer reveal schedule) with call counting
-   and token-state traces.
-4. Gate C wiring checks: overfit 16–32 examples; checkpoint/resume check.
-5. Difficulty-calibration command and pilot (200–500 validation problems per
-   setting, several budgets). Record decisions before any test evaluation.
+Do these in order. Items 1–2 are decisions that must be recorded before warmup code
+is run on real data.
+
+1. **D-006/D-017/D-026 mask policy.** Masking is over editable response tokens only,
+   with the prompt fixed (protocol, D-026; not an open choice). Before any warmup,
+   fix in a new decision entry: the precise mask-rate sampling (for example,
+   upstream-style t = clamp(u, 1/500, 1 − 1/500) with u ~ U(0,1), drawn per example;
+   or a different stated distribution; Bernoulli vs. exact-count masking), and
+   zero-mask handling (for example, resample or force at least one masked token).
+2. **Memory/runtime pilot** on MPS (and A100 only if the user approves paid
+   hardware): full fine-tuning vs. LoRA, bf16 vs. fp32 on MPS (Q-3), batch and
+   sequence size for the pilot data (prompt plus response is 59–230 tokens). Record the measured seconds per step and per example; this is the
+   early runtime estimate (D-022). Fix the trainable-parameter policy for all main
+   arms.
+3. Trainer with resumable checkpoints (model, optimizer, scheduler, step, RNG,
+   data order), JSONL metrics, config/provenance capture. Inputs come from the
+   verified data files (`load_split`), never regenerated on the fly.
+4. Ordinary monotone unmasking sampler (integer reveal schedule) with call counting
+   and token-state traces. Resolve its ambiguities (reveal schedule, ties, which
+   confidence decides the commit order) in a decision entry **before** writing it
+   (D-022). Constraints (D-027): training responses have 10, 20 or 30 editable
+   tokens; use only feasible schedules (at least one reveal per call, no mask left at
+   the end); report actual calls; never add no-op calls to match a budget.
+5. Gate C wiring checks: overfit 16–32 examples; checkpoint/resume reproduces the
+   loss trajectory.
+6. Difficulty-calibration command and pilot (200–500 validation problems per
+   setting, several budgets), using the checker's metrics. Record the chosen
+   settings before any test evaluation, then regenerate the dataset if the grid
+   changes (new manifest hash).
+7. Start the methods section (tasks, format, checker, objective) from the verified
+   code.
 
 ## Milestone 4: immutable draft bank and signal diagnostics
 
@@ -75,7 +87,9 @@ Details: `docs/verification.md`, "Pending advisor follow-ups"; `docs/decisions.m
 
 Uniform, high c, −log q, and current CE, plus low and shuffled controls. All start
 from one warmup checkpoint hash, consume identical bank/example IDs, and use the
-same λ/μ, optimizer, and minibatch sampler. Held-out repair evaluation.
+same λ/μ, optimizer, and minibatch sampler. Held-out repair evaluation. This needs
+minimal complete-draft repair support (one repair call on a saved complete draft),
+which is built here; the full correction samplers stay in milestone 6 (D-022).
 
 ## Milestone 6: correction samplers and full-generation evaluation
 
@@ -100,6 +114,8 @@ from raw records.
 1. Read this file, then `docs/decisions.md`, `docs/verification.md`, and
    `docs/source_audit.md` §5 (open questions).
 2. Recreate the environments and assets with the README "Setup" commands, then run
-   `.venv/bin/python -m pytest -q`. All 36 tests should pass; 5 need the weights.
-3. Settle or schedule the pending advisor follow-ups, then start at the first
-   unchecked item of the next milestone.
+   `.venv/bin/python -m pytest -q`. All 180 tests should pass. The 7
+   `real_backbone` tests need the weights and the 68 `tokenizer` tests need the
+   tokenizer files. Inside a sandbox that hides MPS, the MPS case is not collected
+   (179).
+3. Start at the first unchecked item of the next milestone.

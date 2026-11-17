@@ -7,8 +7,3 @@ __pycache__/
 runs/
 !runs/README.md
 .DS_Store
-
-# Local session / AI-assistance records (not part of the research tree)
-docs/ai_usage.md
-docs/handoff.md
-docs/inputs/Cursor_Diffusion_LM_Build_Prompt.txt

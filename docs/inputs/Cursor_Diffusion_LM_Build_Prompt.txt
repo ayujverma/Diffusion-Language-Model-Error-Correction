@@ -1,0 +1,339 @@
+CURSOR BUILD PROMPT — DIFFUSION LM ERROR CORRECTION
+Prepared for Ayuj Verma, CS 395T, revised 16 November 2026 after the novelty review
+
+Read the attached project proposal, “Learning Which Errors to Correct in Diffusion Language Models,” before implementing anything. Build the actual research repository described below. The proposal defines the scientific scope; this prompt supplies implementation detail and verification requirements. Preserve all its main comparisons. Its PDF mentions five weeks, but my working target is three weeks to results and a draft paper. Record any substantive conflict in docs/decisions.md; do not silently change the question or delete an experiment.
+
+This revision explicitly adds a generation-time correct-target-difficulty baseline, separate saved probability fields, difficulty calibration, and inference-budget controls. These approved refinements supplement the proposal. Keep every original required comparison. Do not turn every suggestion in the external novelty review into another required project. Working paper title: “Does Generation-Time Confidence Improve Diffusion Self-Correction?” A positive result is a hypothesis, not an implementation requirement; null and negative findings must remain reportable.
+
+I have a MacBook Pro M2 Max with 64 GB unified memory and 38 GPU cores, plus access to one A100 through Google Colab. Develop a portable PyTorch implementation. Use my Mac for development, exact checks, and small pilots; make substantial runs resumable on the A100. Do not assume CUDA is available on the Mac or that the Colab GPU is always available. A runnable, inspectable research pipeline matters more than a large framework.
+
+Work incrementally. Implement a small complete path first, verify it, and expand it. Do not merely write a plan or scaffold. Continue through inexpensive implementation and checks without repeatedly asking permission. Do not automatically launch a large experiment grid, change the research question, or spend money. Default commands must have small explicit limits. If a backend, source, or download is unavailable, report the exact limitation and continue with independent work. Distinguish IMPLEMENTED, TESTED LOCALLY, TESTED ON REAL BACKBONE, and EXPERIMENT COMPLETED.
+
+1. THE QUESTION AND WHAT IS FIXED
+
+Question: When training drafts are held fixed, does weighting incorrect tokens by their saved generation-time confidence improve correction beyond uniform weighting, generation-time correct-target difficulty, and current correction difficulty?
+
+A draft is a model-generated response before correction. Define three distinct signals at an incorrect token position i:
+- c_i: the frozen generator's probability of the actual wrong token it committed, in the partial context at the commitment event.
+- q_i: that same generator distribution's probability of the correct target token at that same event. Generation-time correct-target difficulty is d_gen_i = -log(q_i).
+- d_now_i: the CURRENT corrector's cross-entropy for the correct target token given the question and saved draft, recomputed during training.
+These are different quantities measured at different times or with different contexts. c_i + q_i <= 1 for distinct wrong and correct tokens, so high c_i already implies some generation-time difficulty. Comparing c_i against d_gen_i is needed to test whether wrong-token confidence adds value beyond that older difficulty signal. No incorrect token has to be excluded: the rules allocate different loss weights across the same errors.
+
+The contribution is a controlled replication and extension that isolates loss weighting on fixed inputs. Self-correction, confidence-based input selection, and token reweighting already exist. Do not claim we invented them, proved novelty, or will beat the baselines. Confidence-based selection that changes the model input is not equivalent to simply weighting a loss on fixed drafts.
+
+Core experiment:
+- Perform one common masked fine-tuning warmup.
+- Freeze a copy of the resulting checkpoint for draft collection.
+- Generate an immutable draft bank from training problems at several decoding budgets.
+- Initialize each correction-training arm from the identical warmup checkpoint.
+- Give the main weighting arms identical drafts, targets, example order, optimizer settings, trainable parameters, ordinary masking examples, and correction/preservation coefficients within each paired seed.
+- Change only the error-weighting rule.
+- Evaluate these arms with the same correction decoder and schedule, then assess sampler dependence separately.
+
+Keep two comparison families distinct:
+A. Causal comparison of weighting rules on identical saved drafts.
+B. Adaptations of prior methods, which may create their own inputs and use their intended samplers.
+Do not label a prior method as the shared-draft control when it changes input construction. Do not call our frozen-bank arm an exact reproduction of ProSeCo's online training.
+
+Required arms:
+1. Compute-matched ordinary masked fine-tuning.
+2. Uniform correction on the shared drafts.
+3. Proposed high-generation-confidence error weighting.
+4. Current-correction-loss weighting, our hard-example control.
+5. ProSeCo's error-prioritized objective adapted to the same backbone/task.
+6. SCOPE training adapted to the same backbone/task, evaluated with D3IM.
+7. Low-generation-confidence control.
+8. Shuffled-confidence control.
+9. Saved generation-time correct-target-difficulty weighting, ranking -log(q_i) upward.
+Also retain the original and common-warmup checkpoints as evaluation references. Use short screening runs, then three training seeds for the main comparisons. Keep the complete experiment matrix visible even before all runs finish. The optional Code Revision Benchmark extension remains optional. DMax and CDLM are related work; they do not replace required arms.
+
+The primary fixed-bank comparison is uniform versus high c_i versus d_gen_i versus d_now_i. Controls and prior-method adaptations remain required supporting experiments. If the proposed rule beats dynamic current-loss weighting, a targeted diagnostic may compare fixed step-0 correction difficulty to distinguish the effect of signal context from static versus changing weights. This diagnostic, a second backbone, natural-language transfer, and new causal-error-weighting methods are not automatic additions to the main run grid.
+
+2. FIRST DELIVERABLE: A SOURCE AND IMPLEMENTATION AUDIT
+
+Inspect the supplied proposal, relevant paper algorithms, official repositories, and model code. Produce docs/source_audit.md containing source URLs, exact model/code revisions, the evidence for each implementation choice, and unresolved questions. Separate published rules from our adaptations. Never invent a repository, paper detail, API, or successful reproduction.
+
+Starting sources:
+- MDLM: https://arxiv.org/abs/2406.07524
+- ProSeCo: https://arxiv.org/abs/2602.11590
+- ProSeCo project/code: https://yair-schiff.github.io/proseco/ and https://github.com/kuleshov-group/proseco
+- DMax: https://arxiv.org/abs/2604.08302
+- CDLM: https://arxiv.org/abs/2512.15596 and https://github.com/zhangshuibai/CDLM
+- CDLM implementation notes: https://github.com/zhangshuibai/CDLM/blob/main/training/README.md
+- CDLM corrected-gradient results: https://github.com/zhangshuibai/CDLM/blob/main/training/corrected_gradient/README.md
+- SCOPE: https://arxiv.org/abs/2606.01026
+- Accessible SCOPE paper mirror: https://www.researchgate.net/publication/405685326_Revise_Don't_Freeze_Sampler-Matched_Training_for_Self-Correcting_Masked_Diffusion_Language_Models
+- Provisional backbone: https://huggingface.co/fredzzp/open-dcoder-0.5B
+- Backbone source: modeling_qwen2.py and generation_utils.py in that model repository.
+- PAPL, relevant confidence-weighted training: https://arxiv.org/abs/2509.23405
+- ReMDM, candidate training-free remasking reference: https://arxiv.org/abs/2503.00307
+- GSM8K source and official splits: https://github.com/openai/grade-school-math
+- DeepMind Mathematics generator: https://github.com/google-deepmind/mathematics_dataset
+- TinyGSM paper and data: https://arxiv.org/abs/2312.09241 and https://huggingface.co/datasets/TinyGSM/TinyGSM
+- PyTorch MPS: https://docs.pytorch.org/docs/stable/notes/mps.html
+
+Two source issues require explicit checks:
+- Open-dCoder is a custom bidirectional diffusion model despite the Qwen2ForCausalLM class name. Its published generation code sets is_causal=False and shifts logits so output position i-1 predicts target position i. Use the same alignment in training, draft-confidence collection, correction, and sampling. Inspect the pinned code rather than assuming generic Hugging Face .generate() is diffusion sampling.
+- CDLM documents a backward bug in its original 0.5B Liger fused CE path: logged per-token losses can look correct while token weights are not applied to gradients. Start with ordinary PyTorch unreduced CE. Any optimized replacement must pass value AND gradient comparisons. Do not inherit the documented faulty path. Reported original checkpoints and corrected retraining are different baselines.
+
+3. REPOSITORY AND ENGINEERING SHAPE
+
+Use Python, PyTorch, pinned compatible Transformers, NumPy, pytest, YAML/dataclass configuration, and ordinary plotting tools. Use a small package rather than a giant notebook. Add dependencies only when needed. Preserve upstream licenses and attribution. Audit and pin remote model code before execution.
+
+Suggested organization, adaptable to an existing repository:
+- pyproject.toml and a lockfile / reproducible environment specification
+- src/diffusion_correction/data/ : task generators, canonical formatting, splits, checker
+- src/diffusion_correction/models/ : tiny test model, Open-dCoder adapter, alignment
+- src/diffusion_correction/drafts/ : collection, confidence records, bank validation
+- src/diffusion_correction/losses/ : masked loss, correction/keep loss, weighting
+- src/diffusion_correction/training/ : warmup, shared-bank trainer, prior-method adapters
+- src/diffusion_correction/sampling/ : ordinary unmasking, ProSeCo-style correction, D3IM
+- src/diffusion_correction/evaluation/ : repair, full generation, timing, statistics
+- configs/ : smoke_cpu, smoke_mps, pilot_a100, and explicit experiment arms
+- scripts/ or one CLI with subcommands
+- tests/ : small exact fixtures and meaningful integration checks
+- notebooks/colab_runner.ipynb : thin launcher only; imports the same package
+- docs/ : source audit, experiment protocol, decisions, verification report, AI-use log
+- paper/ : report source, generated figures/tables, results provenance
+- runs/ : ignored large artifacts, immutable manifests, checkpoints and logs
+
+Provide commands for doctor, inspect-example, generate-data, warmup, collect-drafts, validate-bank, train, evaluate-repair, evaluate-generation, benchmark, and make-report. Command names may differ, but README examples must execute. Support --device cpu|mps|cuda, --config, --seed, --max-steps, and resume where appropriate.
+
+No frontend, agent orchestration framework, cloud database, or mandatory paid service. Use local JSONL/CSV/Parquet and checkpoint files. Optional experiment tracking must not be required to run anything.
+
+4. BACKBONE ADAPTER AND DEVICE GATE
+
+This is a PRETRAINED-MODEL FINE-TUNING project. Load the published Open-dCoder-0.5B checkpoint provisionally, adapt it with common masked supervised fine-tuning on our tasks, then fine-tune copies for correction. Do not initialize the research model from random weights, pretrain a general language model, or convert a new autoregressive model to diffusion. The randomly initialized tiny test backbone is only for software and gradient checks. Record the pretrained checkpoint hash so the distinction is auditable. Open-dCoder is code-oriented; use clear task/code-style prompts and measure task adaptation instead of assuming it is already an instruction-following arithmetic expert.
+
+Before a training loop, implement and verify:
+- Explicit bidirectional attention, correct padding attention, no unintended causal mask.
+- A single function that maps raw logits to the token positions they predict. All consumers use it. Test prompt/response boundaries and the first valid target.
+- Correct mask, padding, BOS/EOS, vocabulary, and special-token handling from the pinned configuration. Never hardcode an unverified token ID.
+- Explicit prompt, response, padding, and editable-position masks.
+- Inference with no labels passed into the model; training obtains logits and calculates our own unreduced losses.
+- No KV cache across changing bidirectional states unless a separate exact implementation is demonstrated. Initial implementation uses no cache.
+- A small CPU test backbone implementing the same adapter contract. Its results are software checks, never evidence about the pretrained model.
+
+The doctor command reports OS, Python, PyTorch/Transformers versions, actual device, memory availability, chosen precision, attention implementation, and model/tokenizer/code revisions. It must exercise a real forward pass, loss, backward pass, and optimizer step for the chosen real backbone when requested. A model that only loads has not passed the training gate.
+
+Start CPU mathematical checks in float64 and/or float32. MPS should use a verified supported precision; do not assume CUDA AMP, BF16, FlashAttention, Triton, bitsandbytes, or fused optimizers work there. On A100, add BF16 and memory optimizations only after the reference implementation works. Keep model calls in the native device and compute sensitive probability/loss operations in float32 where needed. Record dtype choices and any CPU fallback. Do not silently present a CPU-fallback run as an MPS performance measurement.
+
+Choose full fine-tuning versus LoRA after a short real-model memory/runtime pilot. Hold that choice and the trainable parameter set fixed across main arms. If LoRA is used, record target modules, rank, scaling, dropout, and trainable parameter count. Do not spend the project maintaining a separate MLX implementation unless PyTorch proves unusable and we explicitly change the plan.
+
+5. TASKS, TARGETS, AND SPLITS
+
+Implement both proposed task families:
+A. Multi-step arithmetic with exactly computed intermediate values and a final answer.
+B. Short program execution: a small, explicitly defined language with assignments and arithmetic, then controlled compositions such as bounded conditions. A deterministic interpreter produces exact traces and answers. Do not execute arbitrary model-generated Python to obtain labels.
+
+Start with simple examples to verify the pipeline, then use a train/validation pilot to choose meaningful difficulty. If the backbone is nearly perfect, increase composition depth, operand difficulty, or decoding parallelism. If it cannot learn the task, diagnose formatting, alignment, capacity, and warmup before proceeding. Do not manufacture supposedly natural errors to avoid a ceiling. Keep easy cases in evaluation to measure damage to already-correct outputs.
+
+Implement a difficulty-calibration command and record its decisions before final testing:
+- Software fixtures: single-digit arithmetic, including 2+3, and one- or two-statement programs. These are not the main scientific benchmark.
+- Initial task grid: 2, 4, and 6 dependent arithmetic operations; 1-, 2-, and 3-digit operands; addition, subtraction, and multiplication by bounded small integers. Bound intermediate magnitudes and signs explicitly. Begin with integer arithmetic; do not add rounding ambiguities or undefined division.
+- Example prompt: compute a=17+28; b=a*3; c=b-19; return the values of a,b,c. Correct values: 45,135,116. The generated response contains values in fixed slots; the prompt provides operations and constants, not intermediate answers.
+- For short programs, begin with 2–6 assignments in the restricted language, then add bounded conditions after the interpreter and slot representation work. Branch-dependent response length must not reveal a hidden answer; use a public fixed output specification.
+- After common masked warmup, evaluate a small validation grid (for example 200–500 problems per chosen difficulty setting) at several sensible decoding budgets. Record final-answer accuracy, value accuracy, malformed-output rate, errors per draft, confidence ties/saturation, and usable errors per weighting group. This is a configurable pilot, not a required enormous Cartesian product.
+- Aim for mostly valid outputs and enough natural correct and incorrect values to measure both repair and damage. Roughly 40–85% final-answer accuracy at one or more practical budgets is a starting heuristic, not a statistical rule or a filter for test examples. Token/value error rates also matter: long solutions can fail often despite very few wrong tokens.
+- Compare a generous decoding budget with faster budgets. Prefer tasks the warmed model can learn, where parallel decoding leaves room for correction. If accuracy is near zero even at a generous budget, investigate basic task learning before interpreting a correction experiment. If it is near ceiling everywhere, increase depth/carries or try fewer steps; do not intentionally damage the pretrained weights.
+- Preserve easy settings as damage checks. Reserve longer chains (for example 8–12 operations) and unseen operation/program compositions for transfer, once the training range is fixed. Set this protocol using training/validation only, never by selecting test problems on observed success or failure.
+
+Dataset policy: use programmatically generated arithmetic and short programs for the main controlled study, because their intermediate targets and token/value alignment are exact. There is no requirement to use one universal diffusion-LM dataset. GSM8K is a standard word-problem evaluation set; its free-form solutions do not give unique token-level error labels for arbitrary model drafts. DeepMind Mathematics supplies an established generator with difficulty and extrapolation settings, but its question/answer pairs are not automatically our aligned intermediate traces. TinyGSM is a large synthetic collection of problems with Python solutions, not a tiny dataset or a ready-made correction bank. Use these as documented references or optional later integrations. Do not download millions of examples or make them mandatory for the three-week core. A library generator can be reused with attribution, but labels, splits, executable semantics, and trace alignment still require independent checks. Any future natural-language evaluation must accept equivalent valid solutions rather than compare every token to one reference.
+
+Create separate train, validation, in-distribution test, longer-problem test, and unseen-composition test sets. Deduplicate by normalized problem/program plus inputs. All drafts/augmentations of one problem belong to its split. Different random seeds alone do not establish disjointness. Freeze and hash the final split manifest before final evaluation. Select settings using training/validation only.
+
+Use canonical numeric responses with a fixed token layout. A possible representation is fixed-width, separated digits for each intermediate value, but verify actual tokenizer behavior. Fixed character width is not automatically fixed token width. Choose bounds and formatting that make valid target slots align. Output layout and length at inference must follow the task specification or prompt, not hidden answer values.
+
+Store token-to-value-span mappings. Keep token-level supervision and value-level correctness separate. Treat malformed outputs as failures and report their rate. Never silently zip unequal token lists, trim errors, drop failed parses, or reject only unfavorable outputs. If grammar/vocabulary constraints are used, document them and apply them identically across compared arms. Do not expose correct numeric values through a scaffold. Do not grade free-form alternative reasoning by exact agreement with one reference.
+
+6. COMMON WARMUP AND IMMUTABLE DRAFT BANK
+
+Implement ordinary masked fine-tuning on training data with correct visible context and the prompt fixed. Specify the mask-rate distribution, masked-loss estimator, time weighting, and normalization explicitly. Use the same choice in all main arms. Do not inherit an undocumented auxiliary loss from a backbone trainer.
+
+After warmup:
+- Save the exact checkpoint and freeze a generator copy in eval/no_grad mode.
+- Generate natural drafts from fully masked responses, without training targets in the generation input.
+- Use a configurable set of budgets, for example 4, 8, 16, 32 model calls where meaningful for output length. These are starting pilot settings, not a final committed grid.
+- Prefer a monotone unmasking collector initially so each final token has one clear commitment event.
+- Store selected intermediate states separately if used; never mix them silently with complete drafts.
+- Generate independent validation/test draft banks from their own problems for evaluation only. They never enter training.
+
+Each record includes problem_id, split, task family, prompt IDs, correct response IDs in a training/evaluation-only field, draft IDs, response spans, generator checkpoint hash, tokenizer revision, sampler settings, seed, budget, and collection cost.
+For every generated response token, record:
+- token ID and position;
+- commit step and mask fraction immediately BEFORE its prediction;
+- global response and active-block mask fractions when those differ;
+- log probability of the actual committed token under the raw aligned model distribution at temperature 1;
+- log probability of the correct target token under THAT SAME distribution and commitment context, stored as a separate supervised-analysis field;
+- sampling-distribution log probability and selection score separately if temperature, filtering, constraints, or a different confidence score is used.
+Use the raw temperature-1 probability as the initial proposed weighting signal; document this operational definition. Never substitute the probability of the correct target or the maximum probability of a different token. Never recompute this saved score using the later corrector. If collection permits edits, retain event history and explicitly define which event supplies the final token's confidence.
+
+Compute log_softmax on float32 logits and retain float32 log_c and log_q before reducing precision. Rank log_c directly, which has the same ordering as c, and use -log_q for generation-time difficulty. Do not first round c to BF16 or store only rounded percentages. Report ties and saturation; higher-precision arithmetic does not recover information already lost in model logits. Optional entropy/top-two-margin fields are diagnostic metadata, not new mandatory weighting arms.
+
+Collect q through a detached observer of generation logits; ground-truth IDs must never enter the sampler's decisions, model inputs, reveal ordering, or stopping rule. The observer may extract reference probabilities from a forward pass that was already made. Verify that changing those reference IDs changes only the recorded analysis fields, never the generated draft under a fixed RNG state. Save all signals once; do not rerun the generator after correction training to reconstruct them.
+
+The checker creates error labels after generation. These labels and targets are accessible to loss/evaluation code only. The model and sampler never receive an error-location mask. Retain all-correct drafts for preservation training. Save bank hashes; require every shared-bank run to match them.
+
+Before long training, run a signal diagnostic on training/validation drafts: inspect c, -log(q), and step-0 correction loss by budget, generation stage, position, and task difficulty. If a cheap predictive analysis is used, split by problem and assess it on held-out validation problems. A weak correlation or predictive result is not proof that a weighting rule cannot affect learning; still run the short controlled training comparison. Conversely, a predictive association is not proof of a training benefit.
+
+7. EXACT LOSS AND WEIGHTING CONTRACT
+
+For a correction example, let E be wrong editable response-token positions and K be already-correct editable positions. Exclude prompts and padding. Let ell_i = -log p_theta(correct_target_i | question, draft), using the aligned CURRENT correction logits.
+
+Use:
+L = L_mask + lambda * L_error + mu * L_keep
+L_error = sum_{i in E}(w_i * ell_i) / number_of_errors
+L_keep = mean_{i in K}(ell_i)
+
+Use safe zero losses for empty sets; log how often each set is empty. Average over valid tokens within the declared loss minibatch, not padded sequence length. Define the ordinary masking branch separately. The main correction training step may use a masked-example forward pass plus a saved-draft correction forward pass; it does NOT regenerate the saved draft online.
+
+Keep lambda, mu, masking data, sampling rates, batch shapes, optimizer and schedule identical across the main weighting arms. Define a small validation sweep later; report its budget. Choose and log initial lambda/mu, rather than suggesting they are values mandated by the papers.
+
+Proposed rank weights:
+- Group incorrect tokens by decoding budget AND saved generation mask fraction using predetermined bins, e.g. [0,.2), [.2,.4), [.4,.6), [.6,.8), [.8,1]. Retain exact step/block metadata for diagnostics. The same mask fraction under different budgets can arise from different reveal decisions. Keep grouping identical for all weighting rules and choose it before inspecting final outcomes.
+- Pool tokens across the physical loss minibatch, not separately per response. Keep this minibatch definition fixed across arms. Gradient accumulation does not automatically make ranks equivalent to a larger physical batch.
+- For n errors in a bin, use average ranks for ties, rank 1 through n. Set r_i=(rank_i-.5)/n.
+- An initial bounded rule is w_raw=1+beta*(2*r_i-1), with beta=.5 giving [.5,1.5]. Normalize by the mean weight within the bin. Midranks have mean .5, so this rule already has mean-one weights up to numeric error. A singleton or fully tied bin gives weight 1.
+- Assert bounds, finite values, within-bin mean one, and no gradients through weights. Log sparse/singleton bins; a run with no weight variation cannot test the hypothesis.
+- If the pilot shows sparse groups, first use a fixed, stratified minibatch sampler shared across arms or coarsen bins using training/validation only. Bank-level percentiles are an alternative protocol, not a silent fallback: if used, document normalization and estimate the current-loss arm's reference scores on the same training bank at a fixed refresh interval, with its cost counted. Do not change one arm's ranking population without disclosing the mismatch.
+- beta is configurable and selected on validation. beta=0 must recover the uniform implementation.
+
+Controls use the same rank-to-weight rule and normalization:
+- Uniform: w_i=1.
+- High confidence: rank saved log_c upward.
+- Generation-time correct-target difficulty: rank saved -log_q upward. This is a required baseline distinct from current correction difficulty.
+- Low confidence: reverse those ranks.
+- Shuffled confidence: deterministically permute saved scores among errors within the same budget/stage bins before ranking. Preserve the weight distribution; log how many scores actually move. Inspect confounding by task difficulty, value slot, and token class. If results track those factors, add a focused shuffle within adequately populated matched groups or report matched subgroup results. Do not create so many strata that every error becomes its own group.
+- Hard example: rank CURRENT ell_i.detach() upward. Do not allow gradients through the weighting function; otherwise the objective has changed. Keep stage binning and weight range matched.
+
+A high weight does not imply the largest final loss or parameter gradient. Log both weight and weighted CE. The example inspector must make this visible.
+
+Mean-one weights fix total weight, not gradient norm or effective learning rate. Log group sizes, weight variance, effective sample size (sum w)^2 / sum(w^2), and occasional error-loss gradient norms using the same measurement schedule across arms. Keep the main optimizer settings equal; do not secretly rescale one arm's gradients to force a preferred result. If update-size differences explain a gain, evaluate a small validation-controlled learning-rate check and report its cost. Give arms comparable tuning budgets. Treat mu and lambda as parameters to validate, not guarantees that correct tokens will be preserved.
+
+8. PRIOR-METHOD ADAPTATIONS
+
+Implement the common controlled arms first, then add faithful, clearly named adapters:
+- ProSeCo: verify Algorithm 1 and the unconditional-text error-prioritized loss in its appendix. Preserve the first masked loss, detached discrete draft construction, and second correction pass where required. The basic all-position CE variant and the error-prioritized variant must not share a misleading label. Document changed backbone, corpus, normalization, and hyperparameters.
+- SCOPE: verify its two-pass self-conditioning branch, confidence-based partial commitment, loss on committed plus remaining masked positions, exclusion of original clean context from that branch, and ordinary-MDM mixing. The draft-building pass is no_grad. Follow the verified confidence definition; flag any paper/code ambiguity. Preserve its intended D3IM evaluation.
+
+Their input-generation costs count. These adapters can create fresh online inputs and therefore belong to the prior-method comparison, not the fixed-input causal comparison. Write tiny fixtures confirming which positions each objective supervises and which passes receive gradients. If the original code cannot run, label a clean reimplementation as an adaptation and document differences rather than claiming numerical reproduction.
+
+9. SAMPLING AND MODEL-CALL ACCOUNTING
+
+Provide one aligned-logit interface used by every sampler. Prompt/padding positions are immutable. Candidate special-token restrictions must be explicit. Inference must never use target answers, error masks, future probabilities, or a correctness checker to decide edits or stopping.
+
+Implement:
+A. Ordinary unmasking, with an integer reveal schedule that terminates without masks.
+B. A shared ProSeCo-style correction sampler for the weighting arms: a configured correction frequency and number of correction passes, followed by scheduled unmasking. Follow the paper's distinction between temporary complete drafts and the main masked state. Count regular predictions, all correction calls, and any final call. Also support repair of an already-complete draft for the held-out repair evaluation.
+C. D3IM: predict active positions, rank new candidate confidence, keep K TOTAL positions and mask the others. Visible tokens may change directly or become masked. Final K fills the editable block. With block decoding, freeze completed earlier blocks as specified. Evaluate uniform versus proposed weighting under this sampler as well.
+
+A CDLM-style threshold-remasking decoder may be added as a diagnostic/optional extension. It scores the existing visible token, whereas D3IM scores the new candidate. Keep that distinction in names and tests.
+
+For inference-cost controls, also evaluate the ordinary masked-fine-tuned model with (i) the correction methods' call allowance spent on additional meaningful unmasking steps and (ii) a documented training-free remasking sampler compatible with the backbone, provisionally a verified ReMDM adaptation. Count every call and use the same tuning allowance for decoder settings. Do not claim an accuracy-speed benefit solely by comparing a correction system with an ordinary baseline allowed fewer total calls. Training-free means no extra weight training; remasking still costs inference work. The CDLM threshold decoder above remains a separate optional implementation.
+
+A sampler is not finished because the model's output has the correct shape. Provide short token-state traces proving reveal counts, direct revision, remasking, prompt preservation, and final completion. Do not claim batching removes denoising steps. Do not use the ground truth to choose the next token.
+
+10. EVALUATION AND FAIR COMPUTE
+
+Two required evaluations:
+- Held-out draft repair: identical held-out drafts for compared correctors. Measure what was repaired and what was damaged.
+- Full generation: start from a prompt and fully masked response, then run the complete decoder. Repair-only improvements do not establish better generation.
+
+As a diagnostic within full-system evaluation, let each trained model generate its own uncorrected drafts on the same held-out prompts and then measure its repair and damage. Keep the fixed-bank comparison for controlled repair; own-draft scores involve different error populations and must not be interpreted as an isolated corrector ranking. This evaluates repair on each model's own outputs; it does not mean we performed on-policy training.
+
+Predeclare one primary outcome: end-to-end final-answer accuracy at a validation-selected, fixed total model-call budget shared by the main arms. Select the budget before final tests; show the full accuracy-versus-calls and measured-time curves as supporting outcomes. For a combined two-task headline, specify equal-weight task averaging in advance and also report each task separately. A fixed-call win is not automatically a latency win. Quantify repair, damage, invalid outputs, and transfer to explain the result, and avoid selecting a favorable bin or budget after seeing the test set.
+
+Report:
+- Final numeric-answer accuracy and exact trace/value accuracy.
+- Repair rate: initially wrong values that finish correct / initially wrong values.
+- Damage rate: initially correct values that finish wrong / initially correct values.
+- Initially correct whole solutions that become incorrect.
+- Corresponding token-level metrics, invalid-format rate, and empty-denominator counts.
+- Results by saved confidence, generation stage, task difficulty, and decoding budget.
+- Comparisons with generation-time correct-target difficulty and current correction difficulty, including where their error rankings disagree. For structured traces, optionally label an incorrect value as locally inconsistent with the supplied predecessor values versus consistent with already-wrong predecessors. This is a diagnostic distinction, not an automatic causal attribution or a new weighting project; leave ambiguous cases explicitly unclassified.
+- Model calls per example, actual batch shape, processed tokens, synchronized latency, peak memory, and total evaluation time.
+- Accuracy versus measured latency and versus total model calls, plus matched-accuracy/matched-budget comparisons where supported by measured points.
+
+Latency comparisons use the same hardware, precision, attention implementation, batch size, prompts, output format/limits and timing boundaries. Warm up first and synchronize CUDA or MPS before and after timed work. Record model-only and end-to-end time separately. Never compare a Mac number with an A100 number as an algorithmic speedup. Record variation rather than one favorable run.
+
+Training compute accounting includes warmup, draft collection, online draft construction, forward/backward work, validation search and correction training. Report actual GPU time and a clearly labeled work proxy such as processed-token/model-call counts; equal steps alone are not equal compute. Show both stand-alone method cost (including its bank) and shared experimental cost when reusing a bank. Give ordinary masked fine-tuning a comparable total compute allowance. Preserve the fixed-step/data causal comparison among weighting variants and report any small measured runtime differences.
+
+Use paired examples when comparing methods. Bootstrap by problem, not by treating every token or repeated draft as independent. Report seed-level results and uncertainty; do not claim thousands of independent samples from correlated token positions. Keep final tests untouched during tuning. Document all failed runs and exclusions. Null and negative results are valid outcomes.
+
+11. VERIFICATION GATES THAT MUST PASS BEFORE A LARGE RUN
+
+Gate A: Data and alignment
+- Hand-check arithmetic/program outputs and independently test the interpreter.
+- Assert split disjointness and same-problem draft grouping.
+- Verify exact target/logit alignment at several response positions, including prompt boundary.
+- Verify saved log_c and log_q refer to the SAME commitment forward pass, aligned target position, and raw temperature-1 distribution. On wrong positions assert c+q<=1 within tolerance and that -log_q is not current correction CE. Test both argmax and non-argmax committed tokens where supported.
+- Change a right-hand context token and verify an earlier valid position can depend on it; inspect attention to catch an accidental causal model.
+- Verify fixed target layout, malformed-output accounting, prompt immutability, and padding isolation.
+
+Gate B: Loss mathematics
+- Compare per-token CE and total losses to an independent tiny reference calculation.
+- For independent logit rows and FIXED weights/denominators, compare autograd with the analytic derivative w_i*(softmax_i-one_hot_target_i)/denominator.
+- Weight zero must zero that row's direct logit-loss gradient. It need not zero gradients through that token's contextual embeddings elsewhere.
+- Increasing a fixed row's weight must scale its direct gradient accordingly; verify the optimizer update also changes on a tiny controlled model.
+- beta=0 equals uniform; all-one weights equal the unweighted loss.
+- Test ties, singleton bins, all-correct drafts, all-wrong drafts, no masks, prompt/pad exclusions, and finite gradients.
+- Check detached saved-confidence, saved-target-difficulty, and hard-example weights. Check ProSeCo/SCOPE stop-gradient paths separately from masked-loss paths. Ranking q itself upward would emphasize easy generation targets; a test must catch that wrong sign.
+- Any fused/chunked loss must match plain PyTorch forward values AND parameter/logit gradients on the same fixture.
+
+Gate C: A tiny real training run
+- Overfit a small fixed set, such as 16–32 examples, as a wiring check. Do not present it as generalization evidence.
+- Inspect several natural drafts and show their target, saved wrong-token confidence c, saved correct-token probability q, -log_q, error labels, budget/stage bin, current target probability, weight, CE, and weighted CE for every rule.
+- Confirm all weighting runs start from identical checkpoint hashes and consume identical bank/example IDs.
+- Confirm an optimizer update changes intended trainable parameters and leaves frozen parameters unchanged.
+- Repeat a tiny evaluation and checkpoint/resume check. Explain expected numerical tolerances across devices; do not demand bitwise CPU/MPS/CUDA identity.
+
+Gate D: Inference integrity
+- Feed the SAME prompt/draft with evaluator targets permuted; inference output must be unchanged when the RNG state is fixed.
+- Run draft collection twice with identical model/RNG and different observer reference targets: committed tokens, reveal order, and model-call counts must agree. Only observer target-probability/error metadata may differ.
+- Test a deliberately wrong high-confidence visible token. Verify the decoder can actually revise it; standard absorbing decoding alone cannot test this project.
+- Verify every forward call, including nested correction and final filling, is counted.
+- Ensure no mask remains in final outputs and no hidden reference length/answer is used.
+
+Tests must be independently motivated by these invariants, not merely assert whatever the current implementation returns. When a test fails, fix the cause; do not weaken it to get a green report.
+
+12. INSPECTABLE OUTPUTS AND RESUMABILITY
+
+Every run writes:
+- Fully resolved config, seed(s), git revision and dirty status, package versions, device/dtype settings, trainable parameter count.
+- Model, tokenizer, dataset, split and draft-bank hashes/revisions.
+- JSONL metrics with separate L_mask/L_error/L_keep, all three weighting signals, weight summaries, bin counts, effective sample size, sampled gradient diagnostics, repair/damage counts and actual denominators. Store distributions/aggregates as appropriate instead of logging every full vocabulary tensor.
+- Actual wall time, forward/backward/model-call counts, checkpoint paths and failure reasons.
+- Checkpoints containing model/adapters, optimizer, scheduler, training step, RNG states, and data-order/resume state.
+
+Make interruption recovery reliable for Colab. Write checkpoints locally then copy completed checkpoints to durable user storage; avoid a slow remote write every batch. Resume must validate configuration and bank identity. Document whether a cross-device resume is supported and what reproducibility is lost. No tokens or credentials in the repository.
+
+The inspect-example command is a key deliverable: one small table must expose the actual tensors/values used in generation, alignment, error identification and weighted loss. A person should be able to check that one token manually.
+
+Generate figures and result tables from saved raw evaluation records. Do not type measured-looking numbers into a report. Put software fixtures, hypothetical examples and real experimental results in separate locations. Report generation should fail or clearly mark missing measurements rather than invent them.
+
+13. PHASED BUILD AND THREE-WEEK PACING
+
+All phases remain in scope; use the pilot to choose feasible dataset sizes/run lengths. Do not quietly remove a required comparison to meet a calendar estimate.
+
+Days 1–2: Read MDLM background, ProSeCo training/sampling, the relevant SCOPE sections, and CDLM code warnings; inspect PAPL's weighting objective. Audit backbone/gradients, build minimal package, data checker and inspect-example. Pass CPU mathematical checks and real-backbone forward/backward checks. Produce a short measured Mac/A100 pilot when hardware is available. Literature review is included in this schedule, not a separate precondition that delays all implementation.
+Days 3–5: Common pretrained-model warmup, difficulty calibration, natural-draft collection with log_c AND log_q, immutable bank validation, signal diagnostics, uniform correction, and held-out repair evaluation. Establish baseline error and damage rates. Catch floor/ceiling problems now.
+Days 6–7: Run a short four-way screen (uniform, saved wrong-token confidence, saved correct-target difficulty, current difficulty) and implement low/shuffled controls. Complete a small end-to-end generation run and timing audit. Create report outline and methods draft from the verified implementation. Do not treat a noisy short run as proof of superiority or a definitive null result.
+Days 8–11: Add/verify ProSeCo error-prioritized and SCOPE+D3IM adapters and inference-matched ordinary/remasking references. Screen settings on validation. Freeze the main metric, protocol, and measured compute plan.
+Days 12–16: Execute queued main comparisons and controls with required seeds, both task families, and transfer tests. Checkpoint regularly. Generate plots as runs finish; do not wait until every experiment ends to write.
+Days 17–19: Run planned sampler-dependence comparisons and targeted ablations, inspect failure cases, quantify uncertainty. Optional CRB only after core work is accounted for.
+Days 20–21: Regenerate every reported table/figure from run records; finish a draft paper with methods, results, limitations, related work, compute accounting and AI-use disclosure. List any unfinished measurements honestly.
+
+Before submitting a full run grid, estimate total wall time from measured seconds per training step and per evaluation example, multiply by planned methods/seeds/budgets/tasks, and include draft collection. Give the exact commands and expected storage. State which estimates are measurements and which are extrapolations. Do not promise a three-week runtime without this calculation.
+
+14. HOW TO WORK WITH ME
+
+For each completed milestone, provide a concise explanation of:
+- What was built and which scientific requirement it implements.
+- Files/functions to inspect, especially the alignment, confidence collection, weighting and sampler code.
+- Commands actually run, evidence they passed, and checks not run.
+- One real trace or tiny numerical example, when relevant.
+- Remaining risks or decisions, without claiming the research hypothesis is true.
+
+Keep docs/decisions.md, docs/verification.md and docs/ai_usage.md current. Record meaningful AI assistance, reused code, source attribution, and human checks. Do not invent an acknowledgment saying I reviewed tests I have not reviewed. The final scientific interpretation must be grounded in actual runs.
+
+Read this prompt and the proposal now. First produce the requirement/source audit and a short ordered implementation checklist. Then implement the CPU reference path and real-backbone adapter check. Continue through the next inexpensive verified increment. Do not launch the full grid by default, and do not stop at a README that describes code that does not exist.
