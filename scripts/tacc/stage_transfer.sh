@@ -54,8 +54,9 @@ echo "$COMMIT $BRANCH" > "$STAGE/COMMIT"
 
 { cat "$STAGE/FILES.data.txt"; echo "$STAGE/dlmc.bundle"; echo "$STAGE/COMMIT"; } > "$STAGE/FILES.txt"
 echo "hashing $(wc -l < "$STAGE/FILES.txt") files..."
-tr '\n' '\0' < "$STAGE/FILES.txt" | xargs -0 shasum -a 256 > "$STAGE/MANIFEST.sha256"
-tr '\n' '\0' < "$STAGE/FILES.txt" | xargs -0 stat -f '%z %N' > "$STAGE/SIZES.txt"
+while read -r f; do shasum -a 256 "$f"; done < "$STAGE/FILES.txt" > "$STAGE/MANIFEST.sha256.tmp"
+while read -r f; do stat -f '%z %N' "$f"; done < "$STAGE/FILES.txt" > "$STAGE/SIZES.txt"
+mv "$STAGE/MANIFEST.sha256.tmp" "$STAGE/MANIFEST.sha256"
 TOTAL=$(awk '{s+=$1} END {print s}' "$STAGE/SIZES.txt")
 echo "$STAGE/MANIFEST.sha256" >> "$STAGE/FILES.txt"
 echo "commit $COMMIT ($BRANCH); $(wc -l < "$STAGE/FILES.txt") files; $TOTAL bytes"
