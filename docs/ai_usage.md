@@ -203,3 +203,12 @@ Human checks:
 Human checks:
 - None. The remote facts are as reported by the user. Any gate change awaits the user's
   review.
+
+## 2026-11-18: D-036 fixture float64 per-tensor norms (Cursor agent, Claude model)
+
+- The user confirmed diagnostic 3593175 (`norm_accumulation_explains_failure: true`) and
+  asked to fix the fixture norm measurement while keeping the 1% tolerance and the
+  historical fixture.
+- The agent added a shared chunked CPU float64 L2 in `cuda_fixture.py`, pointed the pilot
+  at `cuda_pilot_fixture_f64norms`, wrote D-036, generated and self-checked the new Mac
+  fixture, and added tests. No Slurm jobs and no training.

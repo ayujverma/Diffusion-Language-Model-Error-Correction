@@ -50,23 +50,14 @@ from diffusion_correction.training.rng import make_generator  # noqa: E402
 from diffusion_correction.training.trainer import mask_digest  # noqa: E402
 
 EMBED = "model.embed_tokens.weight"
-CHUNK = 1 << 22
 MEM_KEYS = ("allocated_bytes.all.current", "allocated_bytes.all.peak", "reserved_bytes.all.current",
             "reserved_bytes.all.peak", "num_alloc_retries", "num_ooms", "num_device_alloc", "num_device_free",
             "num_sync_all_streams")
 
 
 def f64_sq(x: torch.Tensor, y: torch.Tensor | None = None) -> float:
-    """Sum of squares of x (or x - y) in float64 on CPU, in fixed chunks, partial sums combined with fsum."""
-    a = x.detach().reshape(-1).cpu()
-    b = None if y is None else y.detach().reshape(-1).cpu()
-    parts = []
-    for s in range(0, a.numel(), CHUNK):
-        d = a[s:s + CHUNK].double()
-        if b is not None:
-            d = d - b[s:s + CHUNK].double()
-        parts.append(float((d * d).sum()))
-    return math.fsum(parts)
+    """Sum of squares via the fixture's shared chunked CPU float64 path (D-036)."""
+    return F.chunked_l2_sq_f64(x, y)
 
 
 def sha256_tensor(t: torch.Tensor) -> str:

@@ -125,15 +125,12 @@ order. The user authenticates and submits every job:
 8. run `final_eval.slurm`.
 
 **Current state (2026-11-18).**
-- Environment check 3592790 passed.
-- Pilot 3592809 **failed** only the fixture's per-tensor update-norm check, on the
-  embedding: 0.0106 against 0.01. There is no `PILOT_PASSED`, so the continuation is
-  blocked.
-- A separate, bounded diagnostic is prepared (`docs/warmup_continuation.md` §11.5). Its
-  TACC job and results are PENDING.
-- On the Mac, the reference's own fp32 embedding-update norm is 1.06% below the float64
-  value. That would explain the failure if CUDA's norm is accurate; this is unconfirmed.
-- Any change to the official gate needs a decisions entry and the user's review.
+- Environment check 3592790 passed. Pilot 3592809 **failed** the native-fp32 embedding
+  update-norm check (0.0106 vs 0.01). Diagnostic 3593175 confirmed norm accumulation.
+- **D-036** is implemented: new fixture `cuda_pilot_fixture_f64norms` (chunked CPU float64
+  norms; 1% tolerance unchanged). Historical fixture preserved. Mac self-check passed.
+- A **fresh** CUDA pilot against the new fixture is still required for `PILOT_PASSED`.
+  Continuation remains blocked until then.
 
 Each step's pass condition is in the runbook (§10 lists those required before the
 continuation). Record CUDA results in `verification.md` only after the job outputs
@@ -408,18 +405,10 @@ as evidence.
   3592559, missing `lahf_lm`), so GPU jobs moved to full `gpu-a100` nodes with one GPU
   selected (D-035; 3 SU per node-hour, about ≲ 27 SU in total). A fresh environment check
   and the CUDA pilot must pass before the continuation (runbook §11.4). SU balance is unconfirmed.
-- **Pilot 3592809 failed the fixture's embedding update-norm check** (1.06153e-2 against
-  1e-2). Everything else in the pilot passed as reported, including bitwise-identical CUDA
-  U, U2 and R runs.
-  - Mac evidence: the reference's own fp32 norm is 1.0594e-2 below a float64 norm of the
-    same update. That points at norm accumulation, but it is not confirmed until the TACC
-    CPU and CUDA diagnostic exists (runbook §11.5).
-  - A second mechanism is still open: 98% of embedding elements have an AdamW denominator
-    near eps, which amplifies small gradient differences.
-  - The memory warnings the user mentioned have not been seen on the Mac, so their
-    classification (allocator recovery vs anything else) is unresolved.
-  - The application has no retry path. The pilot recorded no allocator retry or
-    out-of-memory counters; the diagnostic adds them for its own step only.
+- **Pilot 3592809 / D-036.** The embedding update-norm failure was norm accumulation in the
+  historical fp32 fixture measurement (diagnostic 3593175). D-036 switches per-tensor
+  fixture norms to chunked CPU float64; a fresh pilot is still PENDING. Memory-warning
+  classification from the failed pilot remains unresolved if still of interest.
 - **The hardest pilot settings are near 0%** (length 6 with 3 digits: ≤ 2.5% at every
   budget), and wrong responses there contain about 4.8 wrong values. Those settings
   may give the correction arms little to work with. The pilot grid stays provisional
@@ -435,9 +424,6 @@ as evidence.
   limitation).
 
 **Unresolved choices:**
-- After the pilot-3592809 diagnostic: whether the fixture's update-norm gate should change
-  (for example to float64 norms against a new reference file next to the original), or the
-  failure is judged otherwise. This needs a decisions entry and the user's review.
 - After the D-033 continuation: which checkpoint becomes the milestone-4 generator;
   then the bank-collection budget and the primary budget.
 - D-011: β = 0.5 and the bin edges.

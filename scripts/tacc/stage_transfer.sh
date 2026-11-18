@@ -44,6 +44,8 @@ check runs/data/pilot-seed20261116/manifest.json 990ecd1dd2341b81bc742fa91189b12
     echo runs/calibration/screen-warmup1000/stage2_selection.txt
     echo runs/reference/cuda_pilot_fixture.pt
     echo runs/reference/cuda_pilot_fixture.json
+    echo runs/reference/cuda_pilot_fixture_f64norms.pt
+    echo runs/reference/cuda_pilot_fixture_f64norms.json
     echo runs/preflight/ckpt-0001000-mac.json
 } > "$STAGE/FILES.data.txt"
 while read -r f; do [[ -f "$f" ]] || die "missing $f"; done < "$STAGE/FILES.data.txt"

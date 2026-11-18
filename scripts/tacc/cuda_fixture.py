@@ -1,4 +1,4 @@
-"""Controlled reference fixture for the CUDA pilot (D-033).
+"""Controlled reference fixture for the CUDA pilot (D-033, D-036).
 
 ``make`` RUNS ON: the Mac, CPU fp32 (deterministic reference). ``check`` RUNS ON: a
 Lonestar6 GPU compute node inside scripts/tacc/pilot.slurm. Both load ckpt-0001000
@@ -11,15 +11,22 @@ read-only and perform the SAME computation:
 3. backward, pre-clip global and per-tensor gradient norms, clipping at 1.0;
 4. one AdamW step from the checkpoint's own optimizer state, per-tensor update norms.
 
+Training, clipping and the AdamW step stay fp32. Per-tensor gradient and update norms
+are measured with a shared chunked CPU float64 L2 (D-036): native fp32 ``.norm()`` on the
+embedding (~136M elements) differed by ~1.06% from float64 on the same values and failed
+the 1% gate even when the updates matched. The historical
+``runs/reference/cuda_pilot_fixture.*`` (native fp32 norms) is preserved; the pilot uses
+``runs/reference/cuda_pilot_fixture_f64norms.*``. Tolerances are unchanged.
+
 The tolerances below were fixed before any CUDA output existed. ``check`` exits non-zero
 when any tolerance fails. A greedy-generation mismatch whose reference margin is below
 GEN_NEAR_TIE is reported as a near tie, not as a failure.
 
     .venv/bin/python scripts/tacc/cuda_fixture.py make \
         --checkpoint runs/train/warmup-pilot-v1/checkpoints/ckpt-0001000 \
-        --out runs/reference/cuda_pilot_fixture
+        --out runs/reference/cuda_pilot_fixture_f64norms
     python scripts/tacc/cuda_fixture.py check --device cuda --checkpoint <copy of ckpt-0001000> \
-        --fixture runs/reference/cuda_pilot_fixture --out <dir>/fixture_check.json
+        --fixture runs/reference/cuda_pilot_fixture_f64norms --out <dir>/fixture_check.json
 """
 
 from __future__ import annotations
@@ -48,8 +55,12 @@ MANIFEST = "990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536"
 MONITOR = "configs/eval/monitor_val_stage2_first50.json"
 MONITOR_SHA = "324d5ca8eb01b3fd47f087472197adb6f687965a3bca6fec6e35c0b113dc3d94"
 SEED = 20261117
+LEGACY_FIXTURE = "runs/reference/cuda_pilot_fixture"  # native fp32 norms; do not overwrite
+DEFAULT_FIXTURE = "runs/reference/cuda_pilot_fixture_f64norms"
+NORM_CHUNK = 1 << 22  # 4,194,304 elements per float64 chunk
+NORM_MEASUREMENT = "chunked_cpu_float64_l2"
 
-# Declared before any CUDA result (fp32 parameters, TF32 disabled, CPU fp32 reference).
+# Declared before any CUDA result (fp32 parameters, TF32 disabled). Values unchanged (D-036).
 TOLERANCES = {
     "loss_rel": 1e-4,             # pooled masked loss, relative
     "token_ce_abs": 1e-3,         # per masked token CE, max absolute difference
@@ -61,6 +72,26 @@ TOLERANCES = {
     "tensor_update_norm_rel": 1e-2,  # per-tensor AdamW update norm, same filter
     "gen_near_tie": 1e-3,         # reference top-2 allowed-logit margin at a committed token
 }
+
+
+def chunked_l2_sq_f64(x: torch.Tensor, y: torch.Tensor | None = None) -> float:
+    """Sum of squares of x (or x - y) in float64 on CPU; fixed chunks; parts combined with fsum."""
+    a = x.detach().reshape(-1).cpu()
+    b = None if y is None else y.detach().reshape(-1).cpu()
+    if b is not None and a.shape != b.shape:
+        raise ValueError(f"shape mismatch for norm: {tuple(a.shape)} vs {tuple(b.shape)}")
+    parts = []
+    for s in range(0, a.numel(), NORM_CHUNK):
+        d = a[s:s + NORM_CHUNK].double()
+        if b is not None:
+            d = d - b[s:s + NORM_CHUNK].double()
+        parts.append(float((d * d).sum()))
+    return math.fsum(parts)
+
+
+def chunked_l2_norm_f64(x: torch.Tensor, y: torch.Tensor | None = None) -> float:
+    """L2 norm of x (or x - y) via :func:`chunked_l2_sq_f64`."""
+    return math.sqrt(chunked_l2_sq_f64(x, y))
 
 
 def compute(checkpoint: str, device: torch.device) -> tuple[dict, dict]:
@@ -121,7 +152,8 @@ def compute(checkpoint: str, device: torch.device) -> tuple[dict, dict]:
     out["loss"] = float(lo.loss.detach())
     del rows, top
     lo.loss.backward()
-    gnorms = torch.stack([p.grad.detach().float().norm() for p in params]).cpu()
+    # Per-tensor norms: chunked CPU float64 of the saved fp32 values (D-036). Clipping stays fp32.
+    gnorms = torch.tensor([chunked_l2_norm_f64(p.grad) for p in params], dtype=torch.float64)
     gn = float(torch.nn.utils.clip_grad_norm_(params, 1.0))
     out["grad_norm_pre_clip"] = gn
     tens["tensor_grad_norms"] = gnorms
@@ -131,9 +163,11 @@ def compute(checkpoint: str, device: torch.device) -> tuple[dict, dict]:
     before = [p.detach().clone() for p in params]
     opt.step()
     synchronize(device)
-    tens["tensor_update_norms"] = torch.stack([(p.detach() - b).float().norm() for p, b in zip(params, before)]).cpu()
+    tens["tensor_update_norms"] = torch.tensor(
+        [chunked_l2_norm_f64(p, b) for p, b in zip(params, before)], dtype=torch.float64)
     out["param_names"] = [names[id(p)] for p in params]
     out["lr_used"] = opt.param_groups[0]["lr"]
+    out["norm_measurement"] = NORM_MEASUREMENT
     return out, tens
 
 
@@ -199,34 +233,53 @@ def main() -> int:
     p.add_argument("mode", choices=["make", "check"])
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--device", default="cpu")
-    p.add_argument("--fixture", default="runs/reference/cuda_pilot_fixture")
+    p.add_argument("--fixture", default=DEFAULT_FIXTURE)
     p.add_argument("--out", default=None)
     a = p.parse_args()
+    if a.mode == "make":
+        base = Path(a.out or a.fixture)
+        if base.resolve() == Path(LEGACY_FIXTURE).resolve():
+            raise SystemExit(
+                f"refusing to overwrite the historical native-fp32 fixture {LEGACY_FIXTURE}; "
+                f"use --out {DEFAULT_FIXTURE}")
+        if base.with_suffix(".pt").exists() or base.with_suffix(".json").exists():
+            raise SystemExit(f"refusing to overwrite existing fixture files at {base}.*")
+    else:
+        base = Path(a.fixture)
+        ref = json.loads(base.with_suffix(".json").read_text())
+        if hashlib.sha256(base.with_suffix(".pt").read_bytes()).hexdigest() != ref["tensors_sha256"]:
+            raise SystemExit("fixture tensors do not match their recorded sha256")
+        if ref["tolerances"] != TOLERANCES:
+            raise SystemExit("tolerances differ from the ones recorded with the fixture")
+        if ref.get("norm_measurement") != NORM_MEASUREMENT:
+            raise SystemExit(
+                f"fixture norm_measurement is {ref.get('norm_measurement')!r}; this check expects "
+                f"{NORM_MEASUREMENT!r} (D-036). Point --fixture at {DEFAULT_FIXTURE}, not the "
+                f"historical {LEGACY_FIXTURE}")
+        rt = torch.load(base.with_suffix(".pt"), map_location="cpu", weights_only=True)
+
     device = resolve_device(a.device)
     t0 = time.perf_counter()
     cur, tens = compute(a.checkpoint, device)
     cur["seconds"] = round(time.perf_counter() - t0, 1)
     cur["environment"] = environment_report(device)
     if a.mode == "make":
-        base = Path(a.out or a.fixture)
         base.parent.mkdir(parents=True, exist_ok=True)
         torch.save(tens, base.with_suffix(".pt"))
         cur["tolerances"] = TOLERANCES
+        cur["norm_measurement"] = NORM_MEASUREMENT
         cur["tensors_sha256"] = hashlib.sha256(base.with_suffix(".pt").read_bytes()).hexdigest()
         base.with_suffix(".json").write_text(json.dumps(cur, indent=2, default=str) + "\n")
-        print(json.dumps({k: cur[k] for k in ("loss", "grad_norm_pre_clip", "batch", "seconds")}, indent=2))
+        print(json.dumps({k: cur[k] for k in ("loss", "grad_norm_pre_clip", "batch", "norm_measurement",
+                                              "seconds")}, indent=2))
         print(f"wrote {base}.pt and {base}.json")
         return 0
-    base = Path(a.fixture)
-    ref = json.loads(base.with_suffix(".json").read_text())
-    if hashlib.sha256(base.with_suffix(".pt").read_bytes()).hexdigest() != ref["tensors_sha256"]:
-        raise SystemExit("fixture tensors do not match their recorded sha256")
-    if ref["tolerances"] != TOLERANCES:
-        raise SystemExit("tolerances differ from the ones recorded with the fixture")
-    rt = torch.load(base.with_suffix(".pt"), map_location="cpu", weights_only=True)
+    if cur.get("norm_measurement") != NORM_MEASUREMENT:
+        raise SystemExit("compute() did not record the expected norm_measurement")
     rep = compare(cur, tens, ref, rt)
     rep["environment"] = cur["environment"]
     rep["reference_environment"] = ref["environment"]
+    rep["norm_measurement"] = NORM_MEASUREMENT
     rep["seconds"] = cur["seconds"]
     if a.out:
         Path(a.out).parent.mkdir(parents=True, exist_ok=True)

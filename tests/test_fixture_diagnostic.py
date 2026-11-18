@@ -23,8 +23,9 @@ def test_f64_norm_is_chunk_independent_and_exact(monkeypatch):
     x[0, :5] = 3.0  # a few large entries next to many tiny ones (the embedding update's shape)
     y = torch.randn(1000, 37, generator=g) * 1e-4
     exact = math.fsum(float(v) ** 2 for v in (x.double() - y.double()).reshape(-1))
+    import cuda_fixture as F
     for chunk in (7, 4096, 1 << 22):
-        monkeypatch.setattr(D, "CHUNK", chunk)
+        monkeypatch.setattr(F, "NORM_CHUNK", chunk)
         assert D.f64_sq(x, y) == pytest.approx(exact, rel=1e-13)
         assert D.f64_sq(x) == pytest.approx(math.fsum(float(v) ** 2 for v in x.double().reshape(-1)), rel=1e-13)
 

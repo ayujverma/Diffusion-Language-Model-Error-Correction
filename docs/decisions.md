@@ -636,3 +636,18 @@ continuation result.** Runbook: `docs/warmup_continuation.md`.
 - **Gates.** The probe is a diagnostic, not a gate: it does not replace
   `ENV_CHECK_PASSED` or `PILOT_PASSED`. The full environment check (including the
   checkpoint preflight), the pilot and the continuation are pending.
+
+**D-036 (2026-11-18) CUDA pilot fixture: per-tensor norms measured with chunked CPU float64.**
+- **Evidence.** Pilot 3592809 failed only `tensor_update_norm_rel` on
+  `model.embed_tokens.weight` (1.0615e-2 against 1e-2). Diagnostic job 3593175 reported
+  `norm_accumulation_explains_failure: true`: CUDA and Mac embedding updates agreed
+  elementwise (~1.8e-4 relative), while the Mac native fp32 L2 of that update was ~1.06%
+  below a chunked float64 L2 of the same saved fp32 values. Tolerance 1e-2 is unchanged.
+- **Change.** In `scripts/tacc/cuda_fixture.py`, `make` and `check` both record per-tensor
+  gradient and update norms with a shared chunked CPU float64 L2
+  (`norm_measurement: chunked_cpu_float64_l2`). Training, clipping (`clip_grad_norm_`) and
+  AdamW stay fp32. The historical `runs/reference/cuda_pilot_fixture.*` (native fp32 norms)
+  is preserved; the pilot uses `runs/reference/cuda_pilot_fixture_f64norms.*`.
+- **Gates.** This replaces the measurement for those two per-tensor checks only. A fresh
+  CUDA pilot against the new fixture is required for `PILOT_PASSED`. No pilot is marked
+  passed by this entry.

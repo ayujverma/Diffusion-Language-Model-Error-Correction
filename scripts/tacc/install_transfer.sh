@@ -39,6 +39,8 @@ link runs/calibration/stage2-warmup1000
 link runs/calibration/screen-warmup1000
 link runs/reference/cuda_pilot_fixture.pt
 link runs/reference/cuda_pilot_fixture.json
+link runs/reference/cuda_pilot_fixture_f64norms.pt
+link runs/reference/cuda_pilot_fixture_f64norms.json
 link runs/preflight/ckpt-0001000-mac.json
 
 mkdir -p "$DLMC_REPO/runs/slurm" "$DLMC_RETAINED" "$DLMC_SCRATCH/runs" "$DLMC_SCRATCH/pilot"

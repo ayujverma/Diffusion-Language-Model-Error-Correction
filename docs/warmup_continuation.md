@@ -286,7 +286,7 @@ and never enters the continuation's counters:
 
 | Part | What it shows |
 | --- | --- |
-| `cuda_fixture.py check` | Against the Mac CPU reference fixture (`runs/reference/cuda_pilot_fixture.*`, made from checkpoint 1000 on CPU fp32), on a fixed 18-example batch with fixed masks: loss, per-token CE, logsumexp, top-5 logits, argmax, pre-clip gradient norm, per-tensor gradient norms, then one clipped AdamW step from the checkpoint's optimizer state (per-tensor update norms), and greedy T = L generation for one problem per setting |
+| `cuda_fixture.py check` | Against the Mac CPU reference fixture (`runs/reference/cuda_pilot_fixture_f64norms.*`, D-036; historical `cuda_pilot_fixture.*` preserved), on a fixed 18-example batch with fixed masks: loss, per-token CE, logsumexp, top-5 logits, argmax, pre-clip gradient norm, per-tensor gradient norms (chunked CPU float64 L2), then one clipped AdamW step from the checkpoint's optimizer state (per-tensor update norms, same measurement), and greedy T = L generation for one problem per setting |
 | `dlmc benchmark full,32,longest` | batch shapes, s/update, examples/s, tokens/s, CUDA allocated/reserved/peak memory, optimizer-state bytes and device |
 | run M | baseline monitoring evaluation at 1000 (cost, CUDA baseline score), no update |
 | runs U, U2 | uninterrupted 1000 → 1010; U also copies its checkpoints to `$WORK` (copy timing). U2 repeats U to measure the CUDA run-to-run noise floor |
@@ -305,7 +305,7 @@ and never enters the continuation's counters:
 | top-5 logits (IDs must match) | absolute 1e-2 |
 | argmax flips | none where the reference top-1/top-2 margin ≥ 1e-3 |
 | pre-clip gradient norm | relative 1e-3 |
-| per-tensor gradient and update norms (tensors ≥ 1e-3 of the largest) | relative 1e-2 |
+| per-tensor gradient and update norms (tensors ≥ 1e-3 of the largest; chunked CPU float64 L2, D-036) | relative 1e-2 |
 | greedy generation | identical, unless the reference's smallest committed margin < 1e-3 |
 | resume U vs R | exact data and mask fields; loss rtol 1e-4; parameter atol 1e-5; ‖θ_R − θ_U‖ / ‖θ_U − θ_1000‖ ≤ 1e-3 (the Gate C tolerances) |
 
@@ -531,7 +531,7 @@ rebuild).
 The continuation is submitted only after `PILOT_PASSED` and a time limit re-derived from
 the pilot report.
 
-### 11.5 Pilot 3592809 failed one fixture check: update-norm diagnostic (remote results PENDING)
+### 11.5 Pilot 3592809 failed one fixture check: update-norm diagnostic → D-036
 
 **Observed (reported by the user, 2026-11-18), at revision `00de61c`.**
 - Environment check 3592790 passed.
@@ -541,9 +541,12 @@ the pilot report.
 - CUDA runs U, U2 and R matched bitwise across all 290 parameter tensors.
 - Checkpoint 1000 was unchanged.
 
-The pilot has **failed**, and there is no `PILOT_PASSED`. The continuation stays blocked.
-The fixture, its tolerances, the reference files, the dependencies, the hyperparameters and
-the pass markers are all unchanged.
+Pilot 3592809 has **failed** (`PILOT_PASSED` absent). Diagnostic job 3593175 confirmed
+`norm_accumulation_explains_failure: true`. **D-036** changes only the per-tensor norm
+*measurement* (chunked CPU float64 L2 in both `make` and `check`); tolerance 1e-2 is
+unchanged. The historical `cuda_pilot_fixture.*` is preserved; the pilot uses
+`cuda_pilot_fixture_f64norms.*`. A **fresh** CUDA pilot against that fixture is still
+required before continuation.
 
 **Local evidence (Mac CPU, `.venv`, torch 2.15.0; `runs/fixture_diag/mac_cpu`).**
 `scripts/tacc/fixture_update_diagnostic.py run` repeats the fixture's training step on
@@ -793,6 +796,8 @@ environment, the rest of `runs/` (feasibility, Gate C, resume checks, the earlie
 | `runs/calibration/screen-warmup1000/stage2_selection.txt` | 1927 | `48e57dc01c9d523495f61609da05c2900d73a739a0f0b46be017c37ec9b2bfaf` |
 | `runs/reference/cuda_pilot_fixture.pt` | 19168 | `b5dc70811254bdf4394499693836e5cf6e38dc0b0f38e31af11872e6a8ce3e74` |
 | `runs/reference/cuda_pilot_fixture.json` | 20956 | `0f3c48557274ac74e862686ab56d13c5cc6669c35da5ea5cd7caa7db56a6fd24` |
+| `runs/reference/cuda_pilot_fixture_f64norms.pt` | 21717 | `c4c2b4644de8f6b356eb3d56627965edec7d2d7b06a93a8d0951f0aec77b5c27` |
+| `runs/reference/cuda_pilot_fixture_f64norms.json` | 21003 | `a99b8eb047916111b4cadbac0e315a0be196ee9f4c19334301c02c8b868467ab` |
 | `runs/preflight/ckpt-0001000-mac.json` | 16631 | `a09068e309e334d39489d71bfe4438733cea4095f1add1caff8bcba7524faf5c` |
 | `runs/tacc_transfer/dlmc.bundle` | written by `stage_transfer.sh` | git bundle of `main` at the transfer commit |
 | `runs/tacc_transfer/COMMIT` | written by `stage_transfer.sh` | commit ID and branch |

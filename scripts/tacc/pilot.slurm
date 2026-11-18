@@ -55,7 +55,7 @@ step copy bash -c "mkdir -p '$P/copy' && cp -r '$DLMC_ORIGIN' '$COPY' && chmod -
 print(v(sys.argv[1]))' '$COPY'" || die "could not make the disposable copy"
 
 step fixture "$DLMC_PY" scripts/tacc/cuda_fixture.py check --checkpoint "$COPY" --device cuda \
-    --out "$R/fixture_check.json"
+    --fixture runs/reference/cuda_pilot_fixture_f64norms --out "$R/fixture_check.json"
 step bench "$DLMC_CLI" benchmark --config "$DLMC_CONT_CONFIG" --device cuda --configs full,32,longest \
     --warmup-steps 3 --timed-steps 20 --out "$R/benchmark.json"
 

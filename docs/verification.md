@@ -938,9 +938,30 @@ marker was changed.
 
 A first Mac run took its float64 gradient norms after clipping, which is not comparable with the native pre-clip norms. It was corrected, both Mac runs were repeated, and the earlier outputs were kept in `runs/fixture_diag/superseded-gradf64-postclip/`.
 
+### Not run (at the time of the diagnostic preparation)
+
+- Then recorded as done by the user: diagnostic job 3593175
+  (`norm_accumulation_explains_failure: true`); see D-036.
+
+## D-036 fixture float64 norms (2026-11-18, Mac only; fresh CUDA pilot PENDING)
+
+**Change.** Per-tensor gradient and update norms in `cuda_fixture.py` use a shared chunked
+CPU float64 L2 (`norm_measurement: chunked_cpu_float64_l2`). `TOLERANCES` unchanged
+(`tensor_update_norm_rel` / `tensor_grad_norm_rel` = 1e-2). Historical
+`runs/reference/cuda_pilot_fixture.*` hashes unchanged. New fixture:
+`runs/reference/cuda_pilot_fixture_f64norms.*`. Training/clipping/AdamW untouched.
+
+### Checks performed on the Mac
+
+| Check | Result |
+| --- | --- |
+| Legacy fixture hashes | `.pt` `b5dc7081…3e74`, `.json` `0f3c4855…fd24` (unchanged) |
+| `cuda_fixture.py make --out .../cuda_pilot_fixture_f64norms` | wrote fixture; `norm_measurement` set; embed update norm 0.01789845506543277 (matches diagnostic float64) |
+| New fixture sha256 | `.pt` `c4c2b464…5c27`, `.json` `a99b8eb0…67ab` |
+| `cuda_fixture.py check --device cpu` vs the new fixture | **passed**; per-tensor grad/update `max_rel` 0.0 |
+| `tests/test_cuda_fixture_norms.py` (+ diagnostic/env/scripts tests) | targeted suite green; 1% tolerances asserted; legacy overwrite and legacy-check refusals covered |
+
 ### Not run
 
-- The TACC CPU and CUDA diagnostic runs (`fixture_diagnostic.slurm`), their comparisons
-  and the memory summary of pilot 3592809. Those outputs do not exist yet. Whether norm
-  accumulation explains the failure, and how the memory warnings classify, are **PENDING**.
-- The full test suite (only the targeted files above; no shared library code changed).
+- A fresh TACC CUDA pilot (`pilot.slurm`) against `cuda_pilot_fixture_f64norms`.
+  **No `PILOT_PASSED` is claimed here.**
