@@ -1,6 +1,7 @@
-"""Lonestar6 environment guards (D-034): the driver check, the binding of the venv and every pass marker to
-the lock file, and the consistency of the TACC lock with tacc_env.sh and the Mac lock. No TACC access needed:
-tacc_env.sh is sourced with a fake $WORK/$SCRATCH and a fake nvidia-smi."""
+"""Lonestar6 launcher guards (D-034, D-035): the driver check, single-GPU selection and inventory on full
+gpu-a100 nodes, the full-node partition, the binding of the venv and every pass marker to the lock file, and
+the consistency of the TACC lock with tacc_env.sh and the Mac lock. No TACC access needed: tacc_env.sh is
+sourced with a fake $WORK/$SCRATCH and a fake three-GPU nvidia-smi."""
 
 import re
 import subprocess
@@ -25,29 +26,112 @@ def ls6(tmp_path):
     (repo / LOCK_REL).write_bytes((ROOT / LOCK_REL).read_bytes())
     scratch.mkdir()
     fake.mkdir()
-    (fake / "nvidia-smi").write_text('#!/bin/bash\ncase "$*" in\n  *index*) echo 0;;\n'
-                                     '  *driver_version*) echo "$FAKE_DRIVER";;\n'
-                                     '  *name*) echo "NVIDIA A100-PCIE-40GB";;\n  *) echo fake-nvidia-smi;;\nesac\n')
+    (fake / "nvidia-smi").write_text(FAKE_NVIDIA_SMI)
     (fake / "nvidia-smi").chmod(0o755)
 
-    def run(script, driver="570.195.03"):
+    def run(script, driver="570.195.03", **extra):
         env = {"PATH": f"{fake}:/usr/bin:/bin:/usr/sbin:/sbin", "WORK": str(work), "SCRATCH": str(scratch),
-               "TACC_SYSTEM": "ls6", "FAKE_DRIVER": driver, "HOME": str(tmp_path)}
+               "TACC_SYSTEM": "ls6", "FAKE_DRIVER": driver, "HOME": str(tmp_path), **extra}
         r = subprocess.run(["bash", "-c", f"source {TACC / 'tacc_env.sh'}; {script}"], env=env,
                            capture_output=True, text=True)
         return r.returncode, r.stdout + r.stderr
 
-    run.work, run.repo = work, repo
+    run.work, run.repo, run.tmp = work, repo, tmp_path
     return run
+
+
+# A full gpu-a100 node: three A100s. Like the real tool, it ignores CUDA_VISIBLE_DEVICES.
+FAKE_NVIDIA_SMI = r'''#!/bin/bash
+idx=(0 1 2); bus=(00000000:06:00.0 00000000:41:00.0 00000000:81:00.0); uuid=(GPU-aaaa GPU-bbbb GPU-cccc)
+sel=""; q=""
+for a in "$@"; do
+  if [[ "$prev" == -i ]]; then sel=$a; fi
+  case "$a" in --query-gpu=*) q=${a#--query-gpu=};; esac
+  prev=$a
+done
+[[ -n "$q" ]] || { echo fake-nvidia-smi; exit 0; }
+found=0
+for k in 0 1 2; do
+  [[ -z "$sel" || "$sel" == "${idx[$k]}" || "$sel" == "${uuid[$k]}" ]] || continue
+  found=1; out=()
+  IFS=, read -ra fs <<< "$q"
+  for f in "${fs[@]}"; do case "$f" in
+    index) out+=("${idx[$k]}");; pci.bus_id) out+=("${bus[$k]}");; uuid) out+=("${uuid[$k]}");;
+    name) out+=("NVIDIA A100-PCIE-40GB");; memory.total) out+=("40960 MiB");; driver_version) out+=("$FAKE_DRIVER");;
+  esac; done
+  (IFS=,; echo "${out[*]}" | sed 's/,/, /g')
+done
+[[ $found == 1 ]] || { echo "No devices were found" >&2; exit 6; }
+'''
 
 
 @pytest.mark.parametrize("driver,ok", [("570.195.03", True), ("560.35.05", True), ("560.35.04", False),
                                        ("555.42.06", False), ("580.65.06", True), ("garbage", False)])
 def test_driver_guard(ls6, driver, ok):
-    rc, out = ls6("check_gpu", driver)
+    rc, out = ls6(f"select_gpu {ls6.tmp}/inv.txt >/dev/null; check_gpu", driver)
     assert (rc == 0) == ok, out
     if not ok:
         assert "ERROR" in out
+
+
+def test_check_gpu_requires_a_selected_device(ls6):
+    rc, out = ls6("check_gpu")
+    assert rc != 0 and "select_gpu must run" in out
+
+
+@pytest.mark.parametrize("assigned,selected", [(None, "0"), ("0", "0"), ("2", "2"), ("1,2", "1"),
+                                               ("GPU-cccc", "GPU-cccc")])
+def test_select_gpu_one_device_and_inventory(ls6, assigned, selected):
+    rec = ls6.tmp / "logs" / "inv.txt"
+    extra = {} if assigned is None else {"CUDA_VISIBLE_DEVICES": assigned}
+    rc, out = ls6(f'select_gpu {rec} >/dev/null; echo "CVD=$CUDA_VISIBLE_DEVICES ORDER=$CUDA_DEVICE_ORDER"; '
+                  'bash -c \'echo "child CVD=$CUDA_VISIBLE_DEVICES"\'', **extra)
+    assert rc == 0, out
+    assert f"CVD={selected} ORDER=PCI_BUS_ID" in out and f"child CVD={selected}" in out  # exported to children
+    text = rec.read_text()
+    assert "physical GPUs (nvidia-smi; index,pci.bus_id,uuid,name,memory.total,driver_version): 3" in text
+    assert all(u in text for u in ("GPU-aaaa", "GPU-bbbb", "GPU-cccc"))  # full inventory, not just the visible one
+    how = ("selection: device 0 (no scheduler-provided" if assigned is None
+           else f"selection: first device of the scheduler-provided CUDA_VISIBLE_DEVICES={assigned}")
+    assert how in text
+    sel_line = next(line for line in text.splitlines() if line.startswith("selected: "))
+    assert selected in sel_line and sel_line.count("A100") == 1
+
+
+@pytest.mark.parametrize("extra,msg", [({"CUDA_VISIBLE_DEVICES": ""}, "no GPU assigned"),
+                                       ({"CUDA_VISIBLE_DEVICES": "NoDevFiles"}, "no GPU assigned"),
+                                       ({"CUDA_VISIBLE_DEVICES": "5"}, "not in this node"),
+                                       ({"CUDA_DEVICE_ORDER": "FASTEST_FIRST"}, "expected PCI_BUS_ID")])
+def test_select_gpu_refusals(ls6, extra, msg):
+    rc, out = ls6(f"select_gpu {ls6.tmp}/inv.txt", **extra)
+    assert rc != 0 and msg in out, out
+    assert ls6(f"select_gpu {ls6.tmp}/a.txt >/dev/null; select_gpu {ls6.tmp}/b.txt")[0] != 0  # only once per job
+
+
+def test_require_job_needs_the_full_node_partition(ls6):
+    assert ls6("require_job")[0] != 0  # no Slurm job
+    rc, out = ls6("require_job", SLURM_JOB_ID="1", SLURM_JOB_PARTITION="gpu-a100-small")
+    assert rc != 0 and "gpu-a100" in out
+    assert ls6("require_job", SLURM_JOB_ID="1", SLURM_JOB_PARTITION="gpu-a100")[0] == 0
+
+
+GPU_SLURM = ["env_check.slurm", "pilot.slurm", "continuation.slurm", "final_eval.slurm"]
+
+
+@pytest.mark.parametrize("name", GPU_SLURM)
+def test_gpu_jobs_target_one_gpu_on_a_full_node(name):
+    text = (TACC / name).read_text()
+    head = [line for line in text.splitlines() if line.startswith("#SBATCH")]
+    assert "#SBATCH -p gpu-a100" in head and "#SBATCH -N 1" in head and "#SBATCH -n 1" in head
+    assert not re.search(r"--gres|--gpus|srun|torchrun|torch\.distributed|DistributedDataParallel", text)
+    lines = text.splitlines()
+    sel = [i for i, line in enumerate(lines) if line.startswith("select_gpu ")]
+    assert len(sel) == 1, "select_gpu must be called once, at top level, outside a pipe"
+    assert "|" not in lines[sel[0]]
+    first_python = min(i for i, line in enumerate(lines)
+                       if re.search(r'"\$DLMC_(PY|CLI)"|verify_origin|check_torch_gpu|\bcheck_gpu\b', line)
+                       and not line.lstrip().startswith("#"))
+    assert sel[0] < first_python and lines.index("require_job") < sel[0]
 
 
 def test_build_and_markers_are_bound_to_the_lock(ls6):

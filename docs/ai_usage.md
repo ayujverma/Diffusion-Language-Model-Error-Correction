@@ -169,3 +169,18 @@ Human checks:
 - The user approved D-034 on 2026-11-17 for rebuilding and validating the TACC
   environment, and supplied the job-log paths and the `$WORK` path used in runbook §11.3.
   No human has reviewed the code.
+
+## 2026-11-18: Full-node GPU launcher, D-035 (Cursor agent, Claude model)
+
+- The user reported that `gpu-a100-small` job 3592559 failed importing NumPy (missing
+  `lahf_lm`) and that the installed environment passed a probe on a full `gpu-a100` node,
+  and asked for launcher changes only.
+- The agent moved the GPU jobs to `gpu-a100`, added single-GPU selection before any CUDA
+  use with a separate physical-inventory record, a partition guard and a per-job
+  PyTorch one-A100 check, set the pilot report's rate to 3 SU per node-hour, and wrote
+  D-035 and runbook §11.4. The lock and the environment were not changed.
+- Ran on the Mac only: the launcher tests, a mutation check of the guards, `bash -n` and
+  `shellcheck`. Submitted nothing.
+
+Human checks:
+- None. The user ran the remote probe and reported its results.

@@ -393,8 +393,10 @@ as evidence.
   (user ayuj, allocation ASC26098) found driver 570.195.03; torch 2.15.0+cu132 needs
   R580. The transfer and a hash-verified Ranch backup of checkpoint 1000 exist (as
   reported by the user). The fallback torch 2.14.1+cu126 is prepared as D-034 and was
-  approved by the user; it is not installed yet, and a fresh environment check and the
-  CUDA pilot must pass before the continuation (runbook §11). SU balance is unconfirmed.
+  approved by the user and installed. `gpu-a100-small` cannot import its NumPy (job
+  3592559, missing `lahf_lm`), so GPU jobs moved to full `gpu-a100` nodes with one GPU
+  selected (D-035; 3 SU per node-hour, about ≲ 27 SU in total). A fresh environment check
+  and the CUDA pilot must pass before the continuation (runbook §11.4). SU balance is unconfirmed.
 - **The hardest pilot settings are near 0%** (length 6 with 3 digits: ≤ 2.5% at every
   budget), and wrong responses there contain about 4.8 wrong values. Those settings
   may give the correction arms little to work with. The pilot grid stays provisional

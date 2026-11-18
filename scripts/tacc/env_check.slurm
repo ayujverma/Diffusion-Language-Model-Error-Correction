@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J dlmc-envcheck
-#SBATCH -p gpu-a100-small
+#SBATCH -p gpu-a100
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -t 00:30:00
@@ -17,6 +17,7 @@ require_job
 enter_repo
 OUT=$DLMC_RETAINED/env_check/$SLURM_JOB_ID
 mkdir -p "$OUT"
+select_gpu "$OUT/gpu_inventory.txt"
 echo "job $SLURM_JOB_ID account ${SLURM_JOB_ACCOUNT:-?} partition ${SLURM_JOB_PARTITION:-?} node $(hostname)"
 scontrol show job "$SLURM_JOB_ID" > "$OUT/scontrol.txt" || true
 
@@ -55,6 +56,7 @@ checks = {
     "fp32_matmul_matches_cpu_float64_1e-6": mm_rel < 1e-6,
 }
 out = {"checks": checks, "passed": all(checks.values()), "fp32_matmul_rel_error_vs_float64": mm_rel,
+       "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
        "device_name": props.name, "total_memory_bytes": props.total_memory, "environment": rep}
 open(sys.argv[1], "w").write(json.dumps(out, indent=2, default=str) + "\n")
 print(json.dumps(out, indent=2, default=str))

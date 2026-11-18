@@ -882,3 +882,31 @@ not changed, so the full suite and the D-033 mutation checks were not re-run.
   Mac preflight is tested only by the TACC environment check.
 - Staging of the code-only update runs after the commit (it needs a clean tree); its
   outcome is reported outside this file.
+
+## Full-node launcher D-035 (2026-11-18, Mac only; remote checks PENDING)
+
+**Remote evidence (reported by the user, not re-checked here).** At `906dcaa`,
+`gpu-a100-small` job 3592559 failed importing NumPy (the virtual CPU lacks `lahf_lm`,
+required by NumPy's X86_V2 baseline). The same installed D-034 environment passed a
+diagnostic probe on full `gpu-a100` node c301-001: NumPy 2.5.5, torch 2.14.1+cu126,
+CUDA 12.6, driver 570.195.03, three A100-PCIE-40GB, `CUDA_VISIBLE_DEVICES=0` exposing one
+GPU, NumPy → PyTorch → CUDA → back arithmetic passing
+(`/work/10692/ayuj/ls6/dlmc/retained/full-a100-probe.CkLNzB.log`). The probe is not an
+environment check: **the full environment check (including the checkpoint preflight),
+the CUDA pilot and the continuation are PENDING.**
+
+### Checks performed on the Mac
+
+| Check | Result |
+| --- | --- |
+| Lonestar6 user guide, queue table (fetched 2026-11-18) | `gpu-a100`: 3 SU per node-hour, 48 h max; `gpu-a100-small`: 1.5 SU; 0.25 h minimum charge per job; three A100 (40 GB) per GPU node |
+| `tests/test_tacc_env.py` + `tests/test_tacc_scripts.py` | **25 passed**. New: `select_gpu` with no assignment (device 0), with scheduler-provided `0`, `2`, `1,2` (first used) and a UUID; exported to child processes; inventory lists all three fake GPUs separately from the selection; refusals for empty/`NoDevFiles`/absent device, a non-PCI device order, and a second call; `check_gpu` refuses before `select_gpu`; `require_job` refuses `gpu-a100-small`; each GPU Slurm script has `-p gpu-a100 -N 1 -n 1`, no `--gres`/`srun`/distributed launcher, and calls `select_gpu` once, outside a pipe, after `require_job` and before any Python, `check_gpu` or origin check. Driver and lock tests unchanged; pilot report SU at 3.0 per node-hour |
+| Mutation check (temporary edits to `tacc_env.sh`, restored) | 7/7 caught: selection not exported; scheduler assignment ignored; `check_gpu` ordering guard removed; inventory restricted to the selected GPU; partition guard removed; unknown device accepted; partition set back to `gpu-a100-small` |
+| `bash -n` on every `scripts/tacc/*.sh`, `*.slurm`; `shellcheck` 0.11.0 | no syntax errors; only the notice types recorded before |
+| Dependency lock | unchanged (sha256 `652cb195…2365`); no environment rebuild |
+
+### Not run
+
+- Anything on TACC. The fake `nvidia-smi` in the tests models a three-GPU node; the real
+  scheduler's behaviour on `gpu-a100` (whether it sets `CUDA_VISIBLE_DEVICES`) is
+  recorded by the next job's `gpu_inventory.txt`.

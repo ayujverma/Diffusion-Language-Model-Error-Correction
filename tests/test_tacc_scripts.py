@@ -109,7 +109,9 @@ def test_pilot_report_gates_and_estimates(tmp_path):
     # 180 + 4800*1.5 + (5 + 1 unscheduled)*95.45 + 10*60
     assert e["estimated_job_work_seconds"] == round(180 + 7200 + 6 * 95.45 + 600)
     assert e["retained_checkpoints_max"] == 7  # 1500, 2000..5000, plus keep_last 2
-    assert (R / "PILOT_PASSED").exists() and rep["measurements"]["pilot_su"] == 1.5
+    assert (R / "PILOT_PASSED").exists() and rep["measurements"]["pilot_su"] == 3.0  # 1 h on a full gpu-a100 node
+    assert e["su_rate_per_node_hour"] == 3.0
+    assert e["continuation_su_upper_bound"] == e["recommended_slurm_time_limit_hours"] * 3.0
 
     (R / "PILOT_PASSED").unlink()
     (R / "expected_R.json").write_text(json.dumps({"passed": False}))

@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J dlmc-cont
-#SBATCH -p gpu-a100-small
+#SBATCH -p gpu-a100
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -t 05:00:00
@@ -27,7 +27,9 @@ require_marker "$DLMC_PILOT/ENV_CHECK_PASSED.used" "DLMC_PILOT (the pilot must h
 grep -q "^BACKUP VERIFIED" "${DLMC_BACKUP_RECORD:-/nonexistent}" 2>/dev/null \
     || die "set DLMC_BACKUP_RECORD to the Ranch backup record of checkpoint 1000 (backup_to_ranch.sh output)"
 MARGIN=${DLMC_STOP_MARGIN_SECONDS:-1500}
+select_gpu "$DLMC_CONT_DURABLE/logs/gpu_inventory-$SLURM_JOB_ID.txt"
 check_gpu
+check_torch_gpu
 verify_origin
 
 STATUS=(scripts/tacc/continuation_status.py --run-dir "$DLMC_CONT_RUN_DIR" --durable "$DLMC_CONT_DURABLE"

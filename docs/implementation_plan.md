@@ -95,8 +95,10 @@ The fallback torch 2.14.1+cu126 is PREPARED as D-034 and APPROVED by the user
 
 Pending, in order:
 1. (done) the user's approval of D-034;
-2. code-only update, preservation of the old environment and logs, environment rebuild;
-3. a fresh `env_check`;
+2. (done, reported by the user) code-only update, preservation, environment rebuild;
+   `gpu-a100-small` job 3592559 then failed importing NumPy; a probe on a full node passed;
+2a. code-only update to full `gpu-a100` nodes, one GPU per job (D-035, runbook §11.4);
+3. a fresh full `env_check` on `gpu-a100` (including the checkpoint preflight);
 4. pilot (gates in the runbook §8), with that environment;
 5. continuation from the original checkpoint 1000;
 6. final stage-2 comparison of 1000 vs the selected checkpoint.

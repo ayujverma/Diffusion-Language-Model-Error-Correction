@@ -59,6 +59,8 @@ export HF_HUB_OFFLINE=1                                     # all model files ar
 # Model execution happens only inside Slurm jobs on compute nodes.
 require_job() {
     [[ -n "${SLURM_JOB_ID:-}" ]] || die "this step runs models: submit it with sbatch (never run it on a login node)"
+    [[ "${SLURM_JOB_PARTITION:-}" == "$DLMC_PARTITION" ]] \
+        || die "partition '${SLURM_JOB_PARTITION:-}': GPU jobs run on full $DLMC_PARTITION nodes (D-035)"
 }
 
 # Jobs must be submitted from $DLMC_REPO with an unmodified checkout.
@@ -92,20 +94,68 @@ require_marker() {  # require_marker <file> <description>
 
 version_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$2" ]]; }
 
-# Record the GPU and refuse anything that is not one NVIDIA A100 with a new-enough driver.
+# D-035: GPU jobs run on full gpu-a100 nodes (three A100s each; the gpu-a100-small virtual nodes
+# lack the CPU flags NumPy's baseline needs) and use exactly one GPU.
+DLMC_PARTITION=gpu-a100
+DLMC_SU_PER_NODE_HOUR=3                                     # Lonestar6 user guide, gpu-a100 queue
+
+# Pick the single GPU for this job and record the node's physical inventory. Must run in the job
+# shell itself (not in a pipe, so the exports persist) before any process initializes CUDA.
+# A scheduler-provided CUDA_VISIBLE_DEVICES is respected (its first device is used); otherwise
+# device 0. nvidia-smi reports every physical GPU regardless of CUDA_VISIBLE_DEVICES.
+select_gpu() {  # select_gpu <record file>
+    command -v nvidia-smi >/dev/null || die "nvidia-smi not found: not a GPU node"
+    [[ -z "${DLMC_GPU_SELECTED:-}" ]] || die "select_gpu already ran (device $DLMC_GPU_SELECTED)"
+    [[ -z "${CUDA_DEVICE_ORDER:-}" || "$CUDA_DEVICE_ORDER" == PCI_BUS_ID ]] \
+        || die "CUDA_DEVICE_ORDER=$CUDA_DEVICE_ORDER: expected PCI_BUS_ID (nvidia-smi index order)"
+    export CUDA_DEVICE_ORDER=PCI_BUS_ID
+    local sel how fields=index,pci.bus_id,uuid,name,memory.total,driver_version phys chosen
+    if [[ -z "${CUDA_VISIBLE_DEVICES+set}" ]]; then
+        sel=0; how="device 0 (no scheduler-provided CUDA_VISIBLE_DEVICES)"
+    else
+        [[ -n "$CUDA_VISIBLE_DEVICES" && "$CUDA_VISIBLE_DEVICES" != NoDevFiles ]] \
+            || die "no GPU assigned to this job (CUDA_VISIBLE_DEVICES='$CUDA_VISIBLE_DEVICES')"
+        sel=${CUDA_VISIBLE_DEVICES%%,*}
+        how="first device of the scheduler-provided CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+    fi
+    phys=$(nvidia-smi --query-gpu=$fields --format=csv,noheader) || die "nvidia-smi inventory query failed"
+    [[ -n "$phys" ]] || die "nvidia-smi lists no GPU"
+    chosen=$(nvidia-smi -i "$sel" --query-gpu=$fields --format=csv,noheader 2>/dev/null) \
+        || die "device '$sel' is not in this node's GPU inventory"
+    export CUDA_VISIBLE_DEVICES=$sel DLMC_GPU_SELECTED=$sel
+    mkdir -p "$(dirname "$1")"
+    {
+        echo "job ${SLURM_JOB_ID:-?} partition ${SLURM_JOB_PARTITION:-?} node $(hostname)"
+        echo "physical GPUs (nvidia-smi; $fields): $(grep -c . <<< "$phys")"
+        echo "$phys"
+        echo "selection: $how"
+        echo "selected: $chosen"
+        echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES CUDA_DEVICE_ORDER=$CUDA_DEVICE_ORDER"
+        echo "SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset} SLURM_STEP_GPUS=${SLURM_STEP_GPUS:-unset}"
+    } | tee "$1"
+}
+
+# Refuse anything but an NVIDIA A100 with a new-enough driver as the selected device.
 check_gpu() {
     command -v nvidia-smi >/dev/null || die "nvidia-smi not found: not a GPU node"
+    [[ -n "${DLMC_GPU_SELECTED:-}" ]] || die "select_gpu must run before check_gpu and before any CUDA use"
     nvidia-smi
-    local n driver name
-    n=$(nvidia-smi --query-gpu=index --format=csv,noheader | wc -l)
-    driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)
-    name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-    echo "visible GPUs: $n; first: $name; driver $driver; CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+    local driver name
+    driver=$(nvidia-smi -i "$DLMC_GPU_SELECTED" --query-gpu=driver_version --format=csv,noheader)
+    name=$(nvidia-smi -i "$DLMC_GPU_SELECTED" --query-gpu=name --format=csv,noheader)
+    echo "selected GPU $DLMC_GPU_SELECTED: $name; driver $driver; CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
     [[ "$name" == *A100* ]] || die "expected an A100, found '$name'"
     [[ "$driver" =~ ^[0-9]+(\.[0-9]+)+$ ]] || die "cannot parse driver version '$driver'"
     version_ge "$driver" "$DLMC_MIN_DRIVER" || die "driver $driver < $DLMC_MIN_DRIVER: torch $DLMC_TORCH_VERSION \
 (CUDA $DLMC_CUDA_RUNTIME) cannot run. Stop; a different build needs an explicit decision (docs/warmup_continuation.md, \
 'Driver too old')"
+}
+
+# PyTorch must see exactly one CUDA device, an A100 (no multi-GPU or distributed use).
+check_torch_gpu() {
+    "$DLMC_PY" -c "import sys, torch; n = torch.cuda.device_count(); \
+name = torch.cuda.get_device_name(0) if n else ''; print('torch-visible CUDA devices:', n, name); \
+sys.exit(0 if n == 1 and 'A100' in name else 1)" || die "PyTorch must see exactly one A100"
 }
 
 # sha256 of a file equals an expected value.

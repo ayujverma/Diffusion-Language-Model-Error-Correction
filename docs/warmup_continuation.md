@@ -17,6 +17,14 @@ needs R580. No pilot or continuation has run. The fallback torch 2.14.1+cu126 is
 (§11, D-034). The user **approved** it on 2026-11-17 for rebuilding and validating the
 environment; it is **not installed yet**, and its remote validation is **PENDING**.
 
+**Update (2026-11-18, reported by the user).** The D-034 environment was installed. On
+`gpu-a100-small`, environment-check job 3592559 failed importing NumPy: the virtual node's
+CPU lacks `lahf_lm` (NumPy's X86_V2 baseline). The same environment passed a diagnostic
+probe on a full `gpu-a100` node. GPU jobs now use full `gpu-a100` nodes with one GPU
+selected (§11.4, D-035), at 3 SU per node-hour. The probe is not a gate: the full
+environment check (including the checkpoint preflight), the pilot and the continuation
+are **PENDING**.
+
 ## 1. What the continuation does
 
 | Item | Setting |
@@ -26,7 +34,7 @@ environment; it is **not installed yet**, and its remote validation is **PENDING
 | Update cap | 10,000 **total** updates (at most 9,000 more) |
 | Training-time cap | 7,200 s of training-update time, counted from update 1000 across all jobs (§5) |
 | Early stopping | 3 consecutive scheduled evaluations without a strictly higher score (§5) |
-| Device | one NVIDIA A100 40 GB, `gpu-a100-small` queue, TF32 off; torch 2.14.1 + CUDA 12.6 (D-034, approved; §11; the D-033 build, torch 2.15.0 + CUDA 13.2, cannot run on the R570 driver) |
+| Device | one NVIDIA A100 40 GB, selected on a full `gpu-a100` node (three A100s; the other two idle; D-035), TF32 off; torch 2.14.1 + CUDA 12.6 (D-034, approved; §11; the D-033 build, torch 2.15.0 + CUDA 13.2, cannot run on the R570 driver) |
 
 The learning rate stays 3e-5 for the whole continuation: the schedule has no decay
 horizon, so neither the update cap nor resumes change it (preflight check).
@@ -34,8 +42,10 @@ horizon, so neither the update cap nor resumes change it (preflight check).
 ## 2. Configuration status
 
 Resolved: system Lonestar6; Ranch for the backup; the layout in §3; queue
-`gpu-a100-small` (1 node, 48 h max, 1.5 SU per node-hour, minimum charge 0.25 h per
-job, at most 3 running jobs per user; Lonestar6 user guide, queue table).
+`gpu-a100` (full nodes with three A100s; one node per job here; 48 h max, 3 SU per
+node-hour, minimum charge 0.25 h per job; Lonestar6 user guide, queue table). Until
+D-035 the plan used `gpu-a100-small` (1.5 SU per node-hour), whose virtual nodes cannot
+import the installed NumPy.
 
 **Missing (the user supplies these; scripts stop with an error if they are needed and absent):**
 
@@ -44,7 +54,7 @@ job, at most 3 running jobs per user; Lonestar6 user guide, queue table).
 | TACC username and the `$WORK` path on ls6 (`echo $WORK` after login) | `DLMC_REMOTE`, `DLMC_REMOTE_DIR` in `stage_transfer.sh` |
 | Allocation (project) ID and SU balance (`/usr/local/etc/taccinfo`) | `sbatch -A <allocation>` on every submission |
 | Ranch access (`$ARCHIVER`/`$ARCHIVE` set; 2 TB default user quota) | `backup_to_ranch.sh` |
-| GPU count and driver on `gpu-a100-small` nodes | job 3591308 saw one A100-PCIE-40GB and driver 570.195.03; `env_check.slurm` checks each job (one A100 visible, driver ≥ 560.35.05 for the CUDA 12.6 build) |
+| GPU count and driver | full `gpu-a100` node c301-001: three A100-PCIE-40GB, driver 570.195.03 (probe). Every GPU job records the physical inventory, selects one GPU, and requires exactly one torch-visible A100 and driver ≥ 560.35.05 |
 | Network access from compute nodes | `setup_env.sh` in an `idev` session; if it has none, run it on a login node instead |
 
 ## 3. TACC layout
@@ -98,7 +108,7 @@ only). Every model execution runs inside a Slurm job.
    3.14.7. It then installs every package from `scripts/tacc/requirements-tacc-lock.txt`
    with `--require-hashes --no-deps`, and the project with `--no-index
    --no-build-isolation`. Nothing imports torch here.
-6. **GPU job — environment check** (≤ 30 min, ≤ 0.75 SU):
+6. **GPU job — environment check** (≤ 30 min, ≤ 1.5 SU on `gpu-a100`):
    ```bash
    cd $WORK/dlmc/repo && sbatch -A <allocation> scripts/tacc/env_check.slurm
    ```
@@ -111,7 +121,7 @@ only). Every model execution runs inside a Slurm job.
    `ckpt-0001000` and re-runs the preflight on it, which must match the Mac preflight
    field by field (`compare_preflight.py`; floats within 1e-9 relative). It writes
    `ENV_CHECK_PASSED` only if everything passes.
-7. **GPU job — pilot** (≤ 1.5 h, ≤ 2.25 SU):
+7. **GPU job — pilot** (≤ 1.5 h, ≤ 4.5 SU on `gpu-a100`):
    ```bash
    DLMC_ENV_CHECK=$WORK/dlmc/retained/env_check/<jobid> sbatch -A <allocation> scripts/tacc/pilot.slurm
    ```
@@ -335,9 +345,9 @@ replaces them with measured numbers.
 | fp32 full fine-tuning update, batch 32 | ~1.5 s → the 2-hour cap binds at roughly 4,800 more updates (update ~5,800), unless early stopping comes first |
 | monitoring evaluation (500 problems, T = L) | 1–3 min (MPS estimate 191 s of model time) |
 | checkpoint save + verified copy to `$WORK` | ~1–2 min per save, ≤ 18 saves |
-| continuation job | ~3.5–4.5 h of wall time; 5 h requested → ≤ 7.5 SU |
-| environment check / pilot / final evaluation | ≤ 0.75 / ≤ 2.25 / ≤ 3 SU (charged for time used, 0.25 h minimum) |
-| total | ≲ 14 SU |
+| continuation job | ~3.5–4.5 h of wall time; 5 h requested → ≤ 15 SU on `gpu-a100` (3 SU per node-hour) |
+| environment check / pilot / final evaluation | ≤ 1.5 / ≤ 4.5 / ≤ 6 SU (charged for time used, 0.25 h minimum) |
+| total | ≲ 27 SU (was ≲ 14 SU on `gpu-a100-small`; the full node doubles the rate) |
 | retained checkpoints | ≤ 11 × 5.93 GB ≈ 65 GB in `$WORK` (and similar in `$SCRATCH`), plus ~12 GB of pilot durable copies |
 | Ranch | one ~6.0 GB tar |
 
@@ -466,6 +476,60 @@ mandatory before the continuation.
 
 The continuation (§4 step 8) is submitted only after `PILOT_PASSED` from step 7 and a
 time limit re-derived from its report. If step 6 or 7 fails, record it and stop.
+
+### 11.4 Full `gpu-a100` nodes, one GPU per job (D-035)
+
+**Observed (reported by the user, 2026-11-18).** With the D-034 environment installed,
+`gpu-a100-small` job 3592559 failed importing NumPy: the virtual node's CPU flags lack
+`lahf_lm`, required by NumPy's X86_V2 baseline. The same installed environment passed a
+diagnostic probe on full `gpu-a100` node c301-001: NumPy 2.5.5, torch 2.14.1+cu126,
+CUDA 12.6, driver 570.195.03, three physical A100-PCIE-40GB, `CUDA_VISIBLE_DEVICES=0`
+exposing exactly one GPU, and NumPy → PyTorch → CUDA → back arithmetic passing (log
+`/work/10692/ayuj/ls6/dlmc/retained/full-a100-probe.CkLNzB.log`). The probe is a
+diagnostic; it does not replace `ENV_CHECK_PASSED` or `PILOT_PASSED`.
+
+**Launcher changes.** The environment, its lock and its build record are unchanged (no
+rebuild).
+- Every GPU job has `#SBATCH -p gpu-a100`, `-N 1`, `-n 1`, and `require_job` refuses any
+  other partition.
+- `select_gpu` runs in the job shell before any Python or CUDA process. It respects a
+  scheduler-provided `CUDA_VISIBLE_DEVICES` (first device), otherwise selects device 0,
+  sets `CUDA_DEVICE_ORDER=PCI_BUS_ID`, and exports the choice to every child process.
+- It writes the physical inventory (`nvidia-smi`: index, PCI bus, UUID, name, memory,
+  driver, for all GPUs) and the selection to `gpu_inventory*.txt` in the job's retained
+  directory. `check_gpu` checks the selected device (A100, driver ≥ 560.35.05) and
+  refuses to run before `select_gpu`.
+- PyTorch must see exactly one A100: `one_visible_gpu` in the environment check, and
+  `check_torch_gpu` in the pilot, continuation and final evaluation. No multi-GPU or
+  distributed training.
+- Cost: 3 SU per node-hour instead of 1.5 (§9); `pilot_report.py` uses 3.0.
+
+**Commands (the user runs them).** `<new>` is the update commit printed by
+`stage_update.sh`; the exact commands with commit IDs are printed by it as well.
+1. **Mac — stage and copy the code-only update from `906dcaa`:**
+   ```bash
+   DLMC_UPDATE_BASE=906dcaa52e5a5495f230a8612c7db8b17d89e40b DLMC_REMOTE=ayuj@ls6.tacc.utexas.edu \
+       DLMC_REMOTE_ROOT=/work/10692/ayuj/ls6/dlmc scripts/tacc/stage_update.sh
+   ```
+   then run the printed copy command.
+2. **Login — preserve the failed job's and the probe's records** (read-only, nothing moved
+   or deleted):
+   ```bash
+   D=/work/10692/ayuj/ls6/dlmc
+   ls -l $D/retained/full-a100-probe.CkLNzB.log $D/joblogs/*3592559* $D/retained/env_check/3592559
+   chmod a-w $D/retained/full-a100-probe.CkLNzB.log $D/joblogs/*3592559*
+   test ! -d $D/retained/env_check/3592559 || chmod -R a-w $D/retained/env_check/3592559
+   ```
+3. **Login — verify and apply the update** (the commands printed in step 1; the repo must
+   be at `906dcaa` and clean).
+4. **GPU job — full environment check** on `gpu-a100` (the partition comes from the
+   script; do not pass `-p`):
+   `cd $WORK/dlmc/repo && sbatch -A ASC26098 scripts/tacc/env_check.slurm`
+5. **GPU job — CUDA pilot**, only if step 4 wrote `ENV_CHECK_PASSED`:
+   `DLMC_ENV_CHECK=$WORK/dlmc/retained/env_check/<step-4 jobid> sbatch -A ASC26098 scripts/tacc/pilot.slurm`
+
+The continuation is submitted only after `PILOT_PASSED` and a time limit re-derived from
+the pilot report.
 
 ## 12. Local checks performed (Mac, 2026-11-17)
 

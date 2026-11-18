@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J dlmc-finaleval
-#SBATCH -p gpu-a100-small
+#SBATCH -p gpu-a100
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -t 02:00:00
@@ -15,7 +15,9 @@
 source "$SLURM_SUBMIT_DIR/scripts/tacc/tacc_env.sh"
 require_job
 enter_repo
+select_gpu "$DLMC_RETAINED/final_eval/gpu_inventory-$SLURM_JOB_ID.txt"
 check_gpu
+check_torch_gpu
 verify_origin
 BEST=$("$DLMC_PY" scripts/tacc/continuation_status.py --run-dir "$DLMC_CONT_RUN_DIR" --durable "$DLMC_CONT_DURABLE" \
        --origin "$DLMC_ORIGIN" --best) || die "no verified best checkpoint (is the continuation finished?)"

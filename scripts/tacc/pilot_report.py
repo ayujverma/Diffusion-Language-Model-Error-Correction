@@ -40,8 +40,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--report-dir", required=True)
     ap.add_argument("--job-seconds", type=float, required=True)
-    ap.add_argument("--su-per-node-hour", type=float, default=1.5,
-                    help="gpu-a100-small charge rate; confirm against the current Lonestar6 user guide")
+    ap.add_argument("--su-per-node-hour", type=float, default=3.0,
+                    help="gpu-a100 (full node) charge rate; confirm against the current Lonestar6 user guide")
     a = ap.parse_args()
     R = Path(a.report_dir)
 

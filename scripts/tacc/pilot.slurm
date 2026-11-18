@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J dlmc-pilot
-#SBATCH -p gpu-a100-small
+#SBATCH -p gpu-a100
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -t 01:30:00
@@ -32,7 +32,9 @@ P=$DLMC_SCRATCH/pilot/$SLURM_JOB_ID          # checkpoints (large, purgeable)
 R=$DLMC_RETAINED/pilot/$SLURM_JOB_ID         # reports and run logs (small, kept)
 mkdir -p "$P" "$R"
 cp "$DLMC_ENV_CHECK/ENV_CHECK_PASSED" "$R/ENV_CHECK_PASSED.used"
+select_gpu "$R/gpu_inventory.txt"
 check_gpu 2>&1 | tee "$R/gpu.txt"
+check_torch_gpu 2>&1 | tee -a "$R/gpu.txt"
 
 set +e
 step() {  # step <name> <command...>: run, log, record the exit status, keep going
@@ -90,4 +92,5 @@ for run in M U U2 R; do
     rsync -a --exclude checkpoints "$P/$run" "$R/runs/"
 done
 set -e
-"$DLMC_PY" scripts/tacc/pilot_report.py --report-dir "$R" --job-seconds $(( $(date +%s) - JOB_START ))
+"$DLMC_PY" scripts/tacc/pilot_report.py --report-dir "$R" --job-seconds $(( $(date +%s) - JOB_START )) \
+    --su-per-node-hour "$DLMC_SU_PER_NODE_HOUR"

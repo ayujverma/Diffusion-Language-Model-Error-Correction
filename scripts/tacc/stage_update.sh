@@ -48,7 +48,7 @@ cat <<EOF
 Copy (one ssh session):
   COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cf - -C runs/tacc_update $NAME \\
     | ssh $DLMC_REMOTE "mkdir -p $DLMC_REMOTE_ROOT/updates && tar -xf - -C $DLMC_REMOTE_ROOT/updates"
-Then on an ls6 login node (docs/warmup_continuation.md, section 11):
+Then on an ls6 login node (docs/warmup_continuation.md, section 11.3 / 11.4):
   cd $U && sha256sum --strict -c SHA256SUMS
   test "\$(git -C $REPO rev-parse HEAD)" = $BASE
   test -z "\$(git -C $REPO status --porcelain --untracked-files=no)"

@@ -611,3 +611,28 @@ continuation result.** Runbook: `docs/warmup_continuation.md`.
   The venv's build record, `ENV_CHECK_PASSED` and the pilot's copy of it carry the lock's
   sha256, and every job refuses a mismatch, so the version change cannot count as a
   passed check. The failed job's logs, the old venv and its records are kept.
+
+**D-035 (2026-11-18) GPU jobs on full `gpu-a100` nodes, one GPU per job.**
+- **Observed (reported by the user).** At `906dcaa`, `gpu-a100-small` job 3592559 failed
+  importing NumPy: the virtual node's CPU flags lack `lahf_lm`, which NumPy's X86_V2
+  baseline requires. The same installed environment (the D-034 build, unchanged) passed a
+  diagnostic probe on full `gpu-a100` node c301-001: NumPy 2.5.5, torch 2.14.1+cu126,
+  CUDA 12.6, driver 570.195.03; three physical A100-PCIE-40GB GPUs;
+  `CUDA_VISIBLE_DEVICES=0` exposed exactly one; NumPy → PyTorch → CUDA → back arithmetic
+  passed. Log: `/work/10692/ayuj/ls6/dlmc/retained/full-a100-probe.CkLNzB.log`.
+- **Decision.** Every GPU job (`env_check`, `pilot`, `continuation`, `final_eval`) runs on
+  the `gpu-a100` partition and refuses any other. Each job selects one GPU in the job shell
+  before any process initializes CUDA: a scheduler-provided `CUDA_VISIBLE_DEVICES` is
+  respected (its first device), otherwise device 0, with `CUDA_DEVICE_ORDER=PCI_BUS_ID`.
+  The node's physical inventory (from `nvidia-smi`) is recorded separately from the
+  selected device, and PyTorch must see exactly one A100. No multi-GPU or distributed
+  training; the other two GPUs stay idle.
+- **Cost.** `gpu-a100` charges 3 SU per node-hour (Lonestar6 user guide), twice the
+  1.5 SU of `gpu-a100-small`, with the same 0.25 h minimum per job and 48 h limit. The
+  pilot report's default rate is now 3.0.
+- **Unchanged.** The dependency lock, the installed environment and its build record;
+  every scientific setting, tolerance, checkpoint, validation and selection rule, and
+  stopping limit (D-033, D-034).
+- **Gates.** The probe is a diagnostic, not a gate: it does not replace
+  `ENV_CHECK_PASSED` or `PILOT_PASSED`. The full environment check (including the
+  checkpoint preflight), the pilot and the continuation are pending.
