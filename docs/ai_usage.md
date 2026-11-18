@@ -150,3 +150,20 @@ What the AI did:
 
 Human checks:
 - None. No human has reviewed the D-033 code, scripts or documents.
+
+## 2026-11-17: TACC compatibility fallback D-034, prepared only (Cursor agent, Claude model)
+
+- The user reported that Lonestar6 job 3591308 stopped at the driver guard (driver
+  570.195.03; torch 2.15.0+cu132 needs R580) and asked for the documented fallback to be
+  prepared without installing it or submitting jobs.
+- The agent verified the official torch 2.14.1+cu126 wheel for CPython 3.14 on Linux
+  x86-64 and its dependencies, regenerated the TACC lock, updated the driver and build
+  checks and bound the environment and pass markers to the lock, added `stage_update.sh`
+  for a code-only update and `tests/test_tacc_env.py`, and wrote D-034 (proposed) and the
+  runbook section 11.
+- Ran on the Mac only: lock resolution and a hash-checked download of every locked wheel
+  for the Linux target, a dependency-closure check, the TACC tests, a mutation check of
+  the guards, `bash -n` and `shellcheck`. Submitted nothing and ran nothing on TACC.
+
+Human checks:
+- None. D-034 awaits the user's approval.

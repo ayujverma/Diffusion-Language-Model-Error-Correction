@@ -1,12 +1,18 @@
-# Lonestar6 (linux x86_64, CPython 3.14.7) environment inputs. Every package that also
-# exists in the Mac environment is held to its requirements-lock.txt version; the
-# Linux-only CUDA runtime packages are pinned by torch 2.15.0 itself (CUDA 13.2).
+# Lonestar6 (linux x86_64, CPython 3.14.7) environment inputs; D-034 fallback (proposed).
+# Every package that also exists in the Mac environment is held to its requirements-lock.txt
+# version through constraints-from-mac-lock.txt (the Mac lock without its torch line).
+# torch is the official PyTorch CUDA 12.6 build, taken by direct URL with the sha256 published
+# on https://download.pytorch.org/whl/cu126/torch/ ; every other package comes from PyPI only.
+# The Linux-only CUDA runtime packages are pinned by torch 2.14.1+cu126 itself (CUDA 12.6).
 # Regenerate requirements-tacc-lock.txt with scripts/tacc/compile_lock.sh.
--c ../../requirements-lock.txt
-torch==2.15.0
+-c constraints-from-mac-lock.txt
+torch @ https://download-r2.pytorch.org/whl/cu126/torch-2.14.1%2Bcu126-cp314-cp314-manylinux_2_28_x86_64.whl#sha256=eb7564fdaccd2920ed78b4e3c08ca4a180fcaf5d4b3ce3068b1968bce4f5834b
 numpy
 safetensors
 huggingface_hub
 tokenizers
 pyyaml
 pytest
+# torch allows any nvJitLink 12.x >= 12.6.85; hold it at the CUDA 12.6 Update 3 component version
+# so no CUDA library is newer than the toolkit (driver R570 supports at most CUDA 12.8).
+nvidia-nvjitlink-cu12==12.6.85

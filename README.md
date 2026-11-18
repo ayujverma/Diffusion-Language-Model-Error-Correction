@@ -13,7 +13,8 @@ masked diffusion LM (Open-dCoder-0.5B) to correct its own drafts.
   warmup, and validation-only difficulty calibration.
 
 A continuation of the common warmup on TACC Lonestar6 is prepared but has not run
-(`docs/warmup_continuation.md`). There is no draft bank or experimental arm yet;
+(`docs/warmup_continuation.md`); the node driver needs a different torch build, proposed
+as D-034 and awaiting approval. There is no draft bank or experimental arm yet;
 only calibration accuracies exist. See `docs/implementation_plan.md`.
 
 | Doc | Contents |

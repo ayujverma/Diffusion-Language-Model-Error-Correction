@@ -846,3 +846,39 @@ Ranch):
 - The transfer staging itself (`stage_transfer.sh`) runs after the commit, because it
   needs a clean tree; its outcome is reported outside this file.
 - No test-split evaluation, draft-bank collection or correction training. No human review.
+
+## TACC compatibility fallback D-034 (2026-11-17, Mac only; PROPOSED, NOT APPROVED)
+
+**Remote evidence (reported by the user, not re-checked here).** Lonestar6 environment-check
+job 3591308 at `944905e` (ASC26098, `gpu-a100-small`, `v330-007.ls6.tacc.utexas.edu`, one
+A100-PCIE-40GB) with CPython 3.14.7, torch 2.15.0, CUDA 13.2: driver 570.195.03; the R580
+guard stopped the job before its later checks. No pilot or continuation has run.
+Checkpoint 1000 has a hash-verified Ranch backup.
+
+**Remote validation of the fallback is PENDING**: nothing below ran on TACC, the fallback is
+not installed, and no CUDA result exists.
+
+### Checks performed on the Mac
+
+| Check | Result |
+| --- | --- |
+| `download.pytorch.org/whl/cu126/torch/` index | lists `torch-2.14.1+cu126-cp314-cp314-manylinux_2_28_x86_64.whl` with sha256 `eb7564fd…834b` and core-metadata sha256 `4496899d…c1ad`; the downloaded metadata matches that hash |
+| Torch metadata | `Requires-Python >=3.10`; Linux deps: `cuda-toolkit[…]==12.6.3`, `cuda-bindings>=12.9.4,<13`, `nvidia-cudnn-cu12==9.10.2.21`, `nvidia-cusparselt-cu12==0.7.1`, `nvidia-nccl-cu12==2.29.3`, `nvidia-nvshmem-cu12==3.4.5`, `nvidia-nvjitlink-cu12>=12.6.85,<13`, `triton~=3.8.0` |
+| NVIDIA CUDA 12.6 Update 3 release notes | toolkit driver minimum on Linux x86_64 ≥ 560.35.05; nvJitLink component 12.6.85 |
+| `scripts/tacc/compile_lock.sh` (uv 0.13.9, `x86_64-manylinux_2_28`, Python 3.14, `--generate-hashes`, PyPI index) | resolved 48 packages; without the nvJitLink pin it chose 12.9.86, so the input holds it at 12.6.85 |
+| Install of the lock for the target platform (`uv pip install --target … --python-platform x86_64-manylinux_2_28 --python-version 3.14 --require-hashes --no-deps -r requirements-tacc-lock.txt`, the `setup_env.sh` flags) | all 48 wheels downloaded and hash-verified; torch reports `__version__ 2.14.1+cu126`, `cuda 12.6`, wheel tag `cp314-cp314-manylinux_2_28_x86_64` |
+| Dependency closure of those 48 distributions for Linux / CPython 3.14.7 (markers evaluated, extras followed) | no missing or out-of-range requirement |
+| `tests/test_tacc_env.py` (new, 8 tests) + `tests/test_tacc_scripts.py` | 10 passed: driver guard (570.195.03, 560.35.05, 580.65.06 accepted; 560.35.04, 555.42.06, unparsable refused); venv build record and pass markers bound to the lock sha256 (missing, foreign and unlabelled markers refused); lock consistency (torch URL and hash, no CUDA 13 packages, all NVIDIA libraries `-cu12`, Mac versions kept, constraints file = Mac lock without torch) |
+| Mutation check of the guards (temporary edits to `tacc_env.sh`, restored) | 6/6 caught: major-only driver check, build-record check disabled, marker check ignoring the sha, torch version, driver minimum, cuDNN version |
+| `bash -n` on every `scripts/tacc/*.sh`, `*.slurm`; `shellcheck` 0.11.0 | no syntax errors; only the notices recorded before (variables used by sourcing scripts, `local t0=$(…)` in `pilot.slurm`) plus `DLMC_CUDNN_VERSION`, which `env_check.slurm` uses |
+
+The model code, configuration, data, checkpoint, tolerances and the Mac environment were
+not changed, so the full suite and the D-033 mutation checks were not re-run.
+
+### Not run
+
+- Anything on TACC: update transfer, environment rebuild, environment check, CUDA pilot,
+  continuation. Whether torch 2.14.1 loads the torch 2.15.0 checkpoint and reproduces the
+  Mac preflight is tested only by the TACC environment check.
+- Staging of the code-only update runs after the commit (it needs a clean tree); its
+  outcome is reported outside this file.

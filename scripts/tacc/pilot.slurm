@@ -25,11 +25,13 @@ source "$SLURM_SUBMIT_DIR/scripts/tacc/tacc_env.sh"
 require_job
 enter_repo
 JOB_START=$(date +%s)
-[[ -n "${DLMC_ENV_CHECK:-}" && -f "${DLMC_ENV_CHECK:-/nonexistent}/ENV_CHECK_PASSED" ]] \
+[[ -n "${DLMC_ENV_CHECK:-}" ]] \
     || die "set DLMC_ENV_CHECK to a passed environment-check directory ($DLMC_RETAINED/env_check/<jobid>)"
+require_marker "$DLMC_ENV_CHECK/ENV_CHECK_PASSED" "DLMC_ENV_CHECK"
 P=$DLMC_SCRATCH/pilot/$SLURM_JOB_ID          # checkpoints (large, purgeable)
 R=$DLMC_RETAINED/pilot/$SLURM_JOB_ID         # reports and run logs (small, kept)
 mkdir -p "$P" "$R"
+cp "$DLMC_ENV_CHECK/ENV_CHECK_PASSED" "$R/ENV_CHECK_PASSED.used"
 check_gpu 2>&1 | tee "$R/gpu.txt"
 
 set +e

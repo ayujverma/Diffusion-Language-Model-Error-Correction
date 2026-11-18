@@ -23,6 +23,7 @@ require_job
 enter_repo
 [[ -n "${DLMC_RESUME_FROM:-}" ]] || die "set DLMC_RESUME_FROM to the checkpoint to resume (first job: $DLMC_ORIGIN)"
 [[ -f "${DLMC_PILOT:-/nonexistent}/PILOT_PASSED" ]] || die "set DLMC_PILOT to a pilot report directory containing PILOT_PASSED"
+require_marker "$DLMC_PILOT/ENV_CHECK_PASSED.used" "DLMC_PILOT (the pilot must have run with the current environment)"
 grep -q "^BACKUP VERIFIED" "${DLMC_BACKUP_RECORD:-/nonexistent}" 2>/dev/null \
     || die "set DLMC_BACKUP_RECORD to the Ranch backup record of checkpoint 1000 (backup_to_ranch.sh output)"
 MARGIN=${DLMC_STOP_MARGIN_SECONDS:-1500}

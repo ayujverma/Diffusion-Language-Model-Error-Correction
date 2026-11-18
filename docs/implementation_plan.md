@@ -87,14 +87,18 @@ Runbook: `docs/warmup_continuation.md`. Done locally:
 5. Preflight of checkpoint 1000, the CUDA reference fixture, and a real-CLI CPU smoke
    run. DONE (Mac).
 
-Pending, in order, on Lonestar6 (the user submits):
-1. transfer;
-2. Ranch backup;
-3. environment;
-4. `env_check`;
-5. pilot (gates in the runbook §8);
-6. continuation from the original checkpoint 1000;
-7. final stage-2 comparison of 1000 vs the selected checkpoint.
+On Lonestar6 (the user submits), as reported by the user: the transfer, the Ranch
+backup of checkpoint 1000 (hash-verified) and the torch 2.15.0 environment are done;
+`env_check` job 3591308 stopped at the driver guard (driver 570.195.03 < R580).
+The fallback torch 2.14.1+cu126 is PREPARED as D-034, NOT APPROVED (runbook §11).
+
+Pending, in order:
+1. the user's decision on D-034;
+2. code-only update, preservation of the old environment and logs, environment rebuild;
+3. a fresh `env_check`;
+4. pilot (gates in the runbook §8), with that environment;
+5. continuation from the original checkpoint 1000;
+6. final stage-2 comparison of 1000 vs the selected checkpoint.
 
 Then the user chooses the milestone-4 generator checkpoint, recorded in a new entry.
 

@@ -3,13 +3,16 @@
 # compute nodes): idev -p vm-small -N 1 -n 1 -t 00:30:00. Downloads and installs only; nothing
 # imports torch here. Builds $SCRATCH/dlmc/venv: uv $DLMC_UV_VERSION (sha256-checked), CPython
 # $DLMC_PYTHON_VERSION, and every package from scripts/tacc/requirements-tacc-lock.txt with
-# --require-hashes. The GPU-side checks are in env_check.slurm.
+# --require-hashes (torch $DLMC_TORCH_VERSION by direct URL from download-r2.pytorch.org, everything
+# else from PyPI). The GPU-side checks are in env_check.slurm.
 #   bash $WORK/dlmc/repo/scripts/tacc/setup_env.sh
 source "$(dirname "$(readlink -f "$0")")/tacc_env.sh"
 cd "$DLMC_REPO"
-LOCK=scripts/tacc/requirements-tacc-lock.txt
+LOCK=$DLMC_LOCK
 [[ -f "$LOCK" ]] || die "missing $LOCK"
 [[ ! -e "$DLMC_VENV" ]] || die "$DLMC_VENV already exists; move it aside yourself to rebuild (nothing is deleted)"
+[[ ! -e "$DLMC_ROOT/env" ]] || die "$DLMC_ROOT/env (records of the existing environment) exists; move it aside \
+yourself before rebuilding (nothing is deleted)"
 
 TOOLS=$DLMC_ROOT/tools/uv-$DLMC_UV_VERSION
 UV=$TOOLS/uv
@@ -39,6 +42,7 @@ mkdir -p "$DLMC_ROOT/env"
     echo "built $(date -u +%FT%TZ) on $(hostname)"
     echo "uv $("$UV" --version)"
     echo "repo commit $(git rev-parse HEAD)"
+    echo "torch $DLMC_TORCH_VERSION (CUDA $DLMC_CUDA_RUNTIME)"
     sha256sum "$LOCK"
 } > "$DLMC_ROOT/env/BUILD.txt"
 cat "$DLMC_ROOT/env/BUILD.txt"

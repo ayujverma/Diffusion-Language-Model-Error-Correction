@@ -581,3 +581,30 @@ continuation result.** Runbook: `docs/warmup_continuation.md`.
 - **Still open.** Which checkpoint becomes the milestone-4 generator: the user
   decides after the comparison, and a new entry records it. The bank-collection
   budget and the final primary budget stay unselected. Test splits stay untouched.
+
+**D-034 (2026-11-17) PROPOSED, NOT APPROVED: torch 2.14.1+cu126 on Lonestar6 for an R570
+driver.** Requires the user's explicit approval before the update is applied on TACC.
+- **Observed.** Environment-check job 3591308 (account ASC26098, `gpu-a100-small`, node
+  `v330-007.ls6.tacc.utexas.edu`, one NVIDIA A100-PCIE-40GB) at commit `944905e` with the
+  D-033 environment (CPython 3.14.7, torch 2.15.0, CUDA 13.2). The driver is 570.195.03;
+  the R580 guard stopped the job before any later check (as reported by the user). No
+  CUDA pilot or continuation has run. Checkpoint 1000 has a hash-verified Ranch backup.
+- **Proposal.** Replace only the TACC torch build: torch 2.14.1+cu126, the official
+  PyTorch wheel `cp314-cp314-manylinux_2_28_x86_64` from `download.pytorch.org/whl/cu126`
+  (sha256 `eb7564fd…834b`), taken by direct URL; every other package from PyPI. CUDA 12.6
+  Update 3 needs Linux driver ≥ 560.35.05 (NVIDIA release notes), which R570 meets
+  without minor-version compatibility. The CUDA 13 packages are gone; the CUDA 12
+  libraries are those torch 2.14.1+cu126 pins, with nvJitLink held at the CUDA 12.6.3
+  component version (12.6.85). Every package shared with the Mac keeps its Mac version.
+  The Mac environment (torch 2.15.0) and its records are unchanged.
+- **Unchanged.** Model, data, optimizer, scheduler, masking, batch size, fp32 precision,
+  TF32 off, clipping, evaluation and selection, stopping limits, and every pilot and
+  preflight tolerance (D-033).
+- **Consequence.** The CUDA runs use a different torch version from the Mac. The checkpoint
+  and the preflight compare state, data order, masks and learning rates, not versions; the
+  preflight comparison also tests that torch 2.14.1 loads the 2.15.0 checkpoint and
+  reproduces the Mac-predicted batches. If it does not, the fallback fails and nothing runs.
+- **Gates.** A fresh environment check and the existing CUDA pilot with this environment.
+  The venv's build record, `ENV_CHECK_PASSED` and the pilot's copy of it carry the lock's
+  sha256, and every job refuses a mismatch, so the version change cannot count as a
+  passed check. The failed job's logs, the old venv and its records are kept.

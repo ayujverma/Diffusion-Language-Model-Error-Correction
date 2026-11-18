@@ -44,7 +44,12 @@ DLMC_STAGE2_SETTINGS=arithmetic:2:1,arithmetic:6:3,arithmetic:4:1,arithmetic:2:2
 DLMC_UV_VERSION=0.13.9
 DLMC_UV_SHA256=a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5
 DLMC_PYTHON_VERSION=3.14.7
-DLMC_MIN_DRIVER_MAJOR=580                                   # torch 2.15.0 wheels are built for CUDA 13.2
+# D-034 fallback build (the CUDA 13.2 build of torch 2.15.0 needs driver R580; ls6 has R570).
+DLMC_LOCK=scripts/tacc/requirements-tacc-lock.txt
+DLMC_TORCH_VERSION=2.14.1+cu126
+DLMC_CUDA_RUNTIME=12.6
+DLMC_CUDNN_VERSION=91002                                    # nvidia-cudnn-cu12 9.10.2.21
+DLMC_MIN_DRIVER=560.35.05                                   # CUDA 12.6 Update 3 toolkit minimum (NVIDIA release notes)
 
 export UV_CACHE_DIR=$DLMC_SCRATCH/uv-cache
 export UV_PYTHON_INSTALL_DIR=$DLMC_SCRATCH/python
@@ -65,8 +70,27 @@ enter_repo() {
     fi
     [[ -z "$(git status --porcelain --untracked-files=no)" ]] || die "tracked files in $DLMC_REPO are modified"
     [[ -x "$DLMC_PY" ]] || die "$DLMC_PY missing: run scripts/tacc/setup_env.sh first"
-    echo "repo $(pwd -P) commit $(git rev-parse HEAD)"
+    check_env_build
+    echo "repo $(pwd -P) commit $(git rev-parse HEAD) lock_sha256 $(lock_sha)"
 }
+
+lock_sha() { sha256sum "$DLMC_REPO/$DLMC_LOCK" | cut -d' ' -f1; }
+
+# The environment must have been built by setup_env.sh from the lock in this checkout.
+check_env_build() {
+    [[ -f "$DLMC_ROOT/env/BUILD.txt" ]] || die "$DLMC_ROOT/env/BUILD.txt missing: run scripts/tacc/setup_env.sh"
+    grep -q "^$(lock_sha)  $DLMC_LOCK\$" "$DLMC_ROOT/env/BUILD.txt" || die "$DLMC_VENV was built from a different \
+lock than $DLMC_LOCK in this checkout: move the old venv and $DLMC_ROOT/env aside and rebuild with setup_env.sh"
+}
+
+# A pass marker (ENV_CHECK_PASSED, or the copy a pilot keeps) must name the current lock.
+require_marker() {  # require_marker <file> <description>
+    [[ -f "$1" ]] || die "$2: $1 not found"
+    grep -qx "lock_sha256 $(lock_sha)" "$1" || die "$2: $1 was not produced with the current environment lock \
+($DLMC_LOCK sha256 $(lock_sha)); a fresh check with this environment is required"
+}
+
+version_ge() { [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$2" ]]; }
 
 # Record the GPU and refuse anything that is not one NVIDIA A100 with a new-enough driver.
 check_gpu() {
@@ -78,8 +102,10 @@ check_gpu() {
     name=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
     echo "visible GPUs: $n; first: $name; driver $driver; CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
     [[ "$name" == *A100* ]] || die "expected an A100, found '$name'"
-    (( ${driver%%.*} >= DLMC_MIN_DRIVER_MAJOR )) || die "driver $driver < R$DLMC_MIN_DRIVER_MAJOR: torch 2.15.0+cu132 \
-cannot run. Stop; a different torch build needs an explicit decision (docs/warmup_continuation.md, 'Driver too old')"
+    [[ "$driver" =~ ^[0-9]+(\.[0-9]+)+$ ]] || die "cannot parse driver version '$driver'"
+    version_ge "$driver" "$DLMC_MIN_DRIVER" || die "driver $driver < $DLMC_MIN_DRIVER: torch $DLMC_TORCH_VERSION \
+(CUDA $DLMC_CUDA_RUNTIME) cannot run. Stop; a different build needs an explicit decision (docs/warmup_continuation.md, \
+'Driver too old')"
 }
 
 # sha256 of a file equals an expected value.

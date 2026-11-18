@@ -10,6 +10,12 @@ Everything on TACC is **PENDING**: transfer, environment build, environment chec
 pilot, backup, continuation and final evaluation. No CUDA result exists. Milestone 4
 (draft bank) and correction training are out of scope and have not been started.
 
+**Update (2026-11-17, reported by the user).** The transfer, the Ranch backup of checkpoint 1000
+(hash-verified) and the torch 2.15.0 environment build were done. Environment-check job
+3591308 stopped at the driver guard: the node has driver 570.195.03, and torch 2.15.0+cu132
+needs R580. No pilot or continuation has run. The fallback torch 2.14.1+cu126 is prepared
+(§11, D-034) but **not approved and not installed**; its remote validation is **PENDING**.
+
 ## 1. What the continuation does
 
 | Item | Setting |
@@ -19,7 +25,7 @@ pilot, backup, continuation and final evaluation. No CUDA result exists. Milesto
 | Update cap | 10,000 **total** updates (at most 9,000 more) |
 | Training-time cap | 7,200 s of training-update time, counted from update 1000 across all jobs (§5) |
 | Early stopping | 3 consecutive scheduled evaluations without a strictly higher score (§5) |
-| Device | one NVIDIA A100 40 GB, `gpu-a100-small` queue, torch 2.15.0 + CUDA 13.2, TF32 off |
+| Device | one NVIDIA A100 40 GB, `gpu-a100-small` queue, TF32 off; torch 2.14.1 + CUDA 12.6 if D-034 is approved (§11; the D-033 build, torch 2.15.0 + CUDA 13.2, cannot run on the R570 driver) |
 
 The learning rate stays 3e-5 for the whole continuation: the schedule has no decay
 horizon, so neither the update cap nor resumes change it (preflight check).
@@ -37,7 +43,7 @@ job, at most 3 running jobs per user; Lonestar6 user guide, queue table).
 | TACC username and the `$WORK` path on ls6 (`echo $WORK` after login) | `DLMC_REMOTE`, `DLMC_REMOTE_DIR` in `stage_transfer.sh` |
 | Allocation (project) ID and SU balance (`/usr/local/etc/taccinfo`) | `sbatch -A <allocation>` on every submission |
 | Ranch access (`$ARCHIVER`/`$ARCHIVE` set; 2 TB default user quota) | `backup_to_ranch.sh` |
-| GPU count and driver on `gpu-a100-small` nodes | verified by `env_check.slurm` (expects exactly one A100 visible, driver ≥ R580) |
+| GPU count and driver on `gpu-a100-small` nodes | job 3591308 saw one A100-PCIE-40GB and driver 570.195.03; `env_check.slurm` checks each job (one A100 visible, driver ≥ 560.35.05 for the CUDA 12.6 build) |
 | Network access from compute nodes | `setup_env.sh` in an `idev` session; if it has none, run it on a login node instead |
 
 ## 3. TACC layout
@@ -96,7 +102,8 @@ only). Every model execution runs inside a Slurm job.
    cd $WORK/dlmc/repo && sbatch -A <allocation> scripts/tacc/env_check.slurm
    ```
    It checks the GPU (A100, compute capability 8.0, `sm_80` in the build, ≥ 39 GB,
-   one visible GPU), the driver (≥ R580) and torch 2.15.0 + CUDA 13.2, and that TF32
+   one visible GPU), the driver and the exact torch, CUDA and cuDNN versions of the
+   lock (§11), that the venv was built from the lock in the checkout, and that TF32
    is off. It also checks that an fp32 GPU matmul matches CPU float64 within 1e-6.
    It then runs the full pytest suite and `dlmc verify-data`, plus `dlmc doctor` on
    CUDA (real backbone forward, loss, backward and AdamW step). Last, it re-hashes
@@ -344,9 +351,10 @@ retained storage, and the final-evaluation cost.
    Mac manifest).
 2. `BACKUP VERIFIED` for the Ranch tar of checkpoint 1000. The Gate C copy in
    `runs/durable/` is a test copy, not a backup of the warmup checkpoint.
-3. `ENV_CHECK_PASSED`, including the preflight matching the Mac.
+3. `ENV_CHECK_PASSED`, including the preflight matching the Mac, produced with the
+   environment built from the current lock (§11.2).
 4. `PILOT_PASSED`: fixture, CUDA save/reload/resume, expected batches, baseline
-   evaluation, original checkpoint unchanged.
+   evaluation, original checkpoint unchanged; run with that same environment.
 5. The continuation time limit is re-derived from the pilot's measurements.
 
 The continuation script enforces 2–4 itself (1 is a precondition of 2 and 3).
@@ -361,6 +369,97 @@ explicit decision and a new decisions entry before anything else runs:
 
 Do not switch silently. The same applies to any failed gate: record it, do not retry
 or loosen a tolerance without a decision.
+
+### 11.1 Observed failure (job 3591308, reported by the user)
+
+At commit `944905e`, account ASC26098, `gpu-a100-small`, node
+`v330-007.ls6.tacc.utexas.edu`: one NVIDIA A100-PCIE-40GB, driver 570.195.03. The
+installed environment was CPython 3.14.7, torch 2.15.0, CUDA 13.2. The R580 guard
+stopped the job before the torch, test, doctor and preflight checks. No pilot or
+continuation has run. Checkpoint 1000 has a hash-verified Ranch backup.
+
+### 11.2 Proposed fallback (D-034): PROPOSED, NOT APPROVED, remote validation PENDING
+
+Only the TACC environment changes; the Mac environment and every setting in §1, §5
+and §8 are unchanged, including all tolerances.
+
+| | D-033 (failed on R570) | D-034 fallback |
+| --- | --- | --- |
+| torch | 2.15.0 (CUDA 13.2), PyPI | 2.14.1+cu126, official wheel `torch-2.14.1+cu126-cp314-cp314-manylinux_2_28_x86_64.whl` by direct URL from `download-r2.pytorch.org/whl/cu126` (the link `download.pytorch.org/whl/cu126/torch/` publishes), sha256 `eb7564fdaccd2920ed78b4e3c08ca4a180fcaf5d4b3ce3068b1968bce4f5834b` |
+| Driver guard | major ≥ 580 | full version ≥ 560.35.05 (CUDA 12.6 Update 3 minimum, NVIDIA release notes); job 3591308's 570.195.03 passes |
+| triton | 3.9.0 | 3.8.0 (torch requires `~=3.8.0`) |
+| CUDA libraries | CUDA 13.2 set, cuDNN 9.26.0.51 (`-cu13`) | CUDA 12.6.3 set, cuDNN 9.10.2.21 (`-cu12`); nvJitLink held at 12.6.85 |
+| Shared packages | Mac versions | Mac versions (unchanged) |
+| Sources | PyPI | torch from the PyTorch URL above; everything else PyPI only |
+
+`env_check.slurm` now requires torch exactly `2.14.1+cu126`, `torch.version.cuda ==
+"12.6"` and cuDNN 91002, besides the existing GPU, TF32, matmul, test, doctor and
+preflight checks. Every job also refuses a venv whose `$WORK/dlmc/env/BUILD.txt` does not
+record the sha256 of the lock in the checkout. `ENV_CHECK_PASSED` records that sha256;
+the pilot accepts only a marker with the current one and keeps a copy
+(`ENV_CHECK_PASSED.used`), and the continuation accepts only a pilot whose copy matches.
+So the old venv, a marker from another environment, or a pilot run under another
+environment cannot pass.
+
+Specific risk, tested by the preflight comparison: torch 2.14.1 must load the
+torch 2.15.0 checkpoint (optimizer state, RNG states) and reproduce the Mac-predicted
+batches and RNG streams field by field. If it does not, the fallback fails; record it and
+stop.
+
+### 11.3 Commands, only after D-034 is approved
+
+`<$WORK>` is the output of `echo $WORK` on ls6; `<update>` is the commit printed by
+step 1. Steps 2–4 run on a login node (file operations only); step 5 on a `vm-small`
+compute node; steps 6–7 are Slurm jobs.
+
+1. **Mac — stage the code-only update** (no data, checkpoint or 7.24 GB bundle):
+   ```bash
+   DLMC_REMOTE=ayuj@ls6.tacc.utexas.edu DLMC_REMOTE_ROOT=<$WORK>/dlmc scripts/tacc/stage_update.sh
+   ```
+   It writes `runs/tacc_update/944905e..<update>/` (`dlmc-update.bundle`, `COMMITS`,
+   `SHA256SUMS`, `DIFFSTAT.txt`) and prints the copy command and the apply commands
+   with the exact commit IDs. Run the printed copy command (one ssh session).
+2. **Login — preserve the failed job's logs and the old environment** (nothing is
+   deleted; each `mv` refuses an existing target):
+   ```bash
+   J=3591308; D=$WORK/dlmc
+   mkdir -p $D/retained/env_check/$J
+   cp -p $D/repo/runs/slurm/dlmc-envcheck-$J.out $D/retained/env_check/$J/
+   chmod -R a-w $D/retained/env_check/$J
+   test ! -e $D/env.torch2150-cu132 && mv $D/env $D/env.torch2150-cu132 && chmod -R a-w $D/env.torch2150-cu132
+   test ! -e $SCRATCH/dlmc/venv.torch2150-cu132 && mv $SCRATCH/dlmc/venv $SCRATCH/dlmc/venv.torch2150-cu132
+   ```
+   The old venv stays on `$SCRATCH` (purged after 10 days without access). It is
+   rebuildable from the lock at `944905e`; to keep a copy anyway:
+   `tar -C $SCRATCH/dlmc -cf $D/venv.torch2150-cu132.tar venv.torch2150-cu132`.
+3. **Login — verify and apply the update** (the commands printed in step 1):
+   ```bash
+   U=$WORK/dlmc/updates/944905e..<update>; R=$WORK/dlmc/repo
+   cd $U && sha256sum --strict -c SHA256SUMS
+   test "$(git -C $R rev-parse HEAD)" = 944905e071572a8f82bb432526ea4cfe9950ed73
+   test -z "$(git -C $R status --porcelain --untracked-files=no)"
+   git -C $R bundle verify $U/dlmc-update.bundle
+   git -C $R fetch $U/dlmc-update.bundle main:refs/remotes/update/main
+   git -C $R merge --ff-only <update full sha>
+   test "$(git -C $R rev-parse HEAD)" = <update full sha> && echo "UPDATE APPLIED"
+   ```
+   The original transfer (`$WORK/dlmc/transfer`, read-only), checkpoint 1000 and the
+   Ranch backup are not touched.
+4. **Login — re-check the transferred files** (unchanged; 41 files plus bundle):
+   `cd $WORK/dlmc/transfer && sha256sum --quiet --strict -c runs/tacc_transfer/MANIFEST.sha256 && echo TRANSFER VERIFIED`
+5. **Compute (`vm-small`) — rebuild the environment:**
+   ```bash
+   idev -p vm-small -N 1 -n 1 -t 00:30:00
+   bash $WORK/dlmc/repo/scripts/tacc/setup_env.sh
+   ```
+   It needs network access to PyPI and `download-r2.pytorch.org`.
+6. **GPU job — fresh environment check:**
+   `cd $WORK/dlmc/repo && sbatch -A ASC26098 scripts/tacc/env_check.slurm`
+7. **GPU job — the existing CUDA pilot**, only if step 6 wrote `ENV_CHECK_PASSED`:
+   `DLMC_ENV_CHECK=$WORK/dlmc/retained/env_check/<step-6 jobid> sbatch -A ASC26098 scripts/tacc/pilot.slurm`
+
+The continuation (§4 step 8) is submitted only after `PILOT_PASSED` from step 7 and a
+time limit re-derived from its report. If step 6 or 7 fails, record it and stop.
 
 ## 12. Local checks performed (Mac, 2026-11-17)
 

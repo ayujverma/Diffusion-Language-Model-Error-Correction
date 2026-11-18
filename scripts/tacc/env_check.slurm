@@ -26,8 +26,9 @@ lscpu > "$OUT/lscpu.txt"
 { module list 2>&1 || true; echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"; } > "$OUT/modules.txt"
 cp "$DLMC_ROOT/env/freeze.txt" "$DLMC_ROOT/env/BUILD.txt" "$OUT/"
 
+DLMC_TORCH_VERSION=$DLMC_TORCH_VERSION DLMC_CUDA_RUNTIME=$DLMC_CUDA_RUNTIME DLMC_CUDNN_VERSION=$DLMC_CUDNN_VERSION \
 "$DLMC_PY" - "$OUT/torch_check.json" <<'EOF'
-import json, sys
+import json, os, sys
 import torch
 from diffusion_correction.env import environment_report, resolve_device
 
@@ -39,8 +40,9 @@ b = torch.randn(512, 512, dtype=torch.float64)
 gpu = (a.float().to(dev) @ b.float().to(dev)).double().cpu()
 mm_rel = float((gpu - a @ b).norm() / (a @ b).norm())
 checks = {
-    "torch_2_15_0": torch.__version__.split("+")[0] == "2.15.0",
-    "cuda_runtime_13_2": (torch.version.cuda or "").startswith("13.2"),
+    "torch_version": torch.__version__ == os.environ["DLMC_TORCH_VERSION"],
+    "cuda_runtime": torch.version.cuda == os.environ["DLMC_CUDA_RUNTIME"],
+    "cudnn_version": torch.backends.cudnn.version() == int(os.environ["DLMC_CUDNN_VERSION"]),
     "cuda_available": torch.cuda.is_available(),
     "one_visible_gpu": torch.cuda.device_count() == 1,
     "a100": "A100" in props.name,
@@ -71,5 +73,10 @@ verify_origin 2>&1 | tee "$OUT/origin_hashes.txt"
 "$DLMC_PY" scripts/tacc/compare_preflight.py "$DLMC_MAC_PREFLIGHT" "$OUT/preflight.json" \
     | tee "$OUT/preflight_vs_mac.txt"
 
-date -u +%FT%TZ > "$OUT/ENV_CHECK_PASSED"
+{
+    date -u +%FT%TZ
+    echo "commit $(git rev-parse HEAD)"
+    echo "torch $DLMC_TORCH_VERSION"
+    echo "lock_sha256 $(lock_sha)"
+} > "$OUT/ENV_CHECK_PASSED"
 echo "ENV CHECK PASSED: $OUT"

@@ -389,10 +389,12 @@ as evidence.
   (D-033). The CUDA trajectory will not match MPS bit for bit. Only data order,
   masks, learning rates and restored state must match exactly, and the pilot gates
   check them.
-- **TACC prerequisites are unknown.** The TACC username, allocation, SU balance, Ranch
-  access, the GPU driver on `gpu-a100-small` (torch 2.15.0 needs ≥ R580) and
-  compute-node network access are all unconfirmed. The scripts check each and stop if
-  it fails.
+- **The torch 2.15.0 build cannot run on Lonestar6.** Environment-check job 3591308
+  (user ayuj, allocation ASC26098) found driver 570.195.03; torch 2.15.0+cu132 needs
+  R580. The transfer and a hash-verified Ranch backup of checkpoint 1000 exist (as
+  reported by the user). The fallback torch 2.14.1+cu126 is prepared as D-034 and needs
+  the user's approval; a fresh environment check and the CUDA pilot must then pass
+  (runbook §11). SU balance is unconfirmed.
 - **The hardest pilot settings are near 0%** (length 6 with 3 digits: ≤ 2.5% at every
   budget), and wrong responses there contain about 4.8 wrong values. Those settings
   may give the correction arms little to work with. The pilot grid stays provisional
