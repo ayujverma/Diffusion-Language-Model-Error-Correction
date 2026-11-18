@@ -910,3 +910,37 @@ the CUDA pilot and the continuation are PENDING.**
 - Anything on TACC. The fake `nvidia-smi` in the tests models a three-GPU node; the real
   scheduler's behaviour on `gpu-a100` (whether it sets `CUDA_VISIBLE_DEVICES`) is
   recorded by the next job's `gpu_inventory.txt`.
+
+## Pilot 3592809 fixture diagnostic (2026-11-18, Mac only; TACC CPU/CUDA results PENDING)
+
+**Remote evidence (reported by the user, not re-checked here).** At `00de61c`:
+- environment check 3592790 passed;
+- pilot 3592809 failed only `tensor_update_norm_rel`: `model.embed_tokens.weight`,
+  1.0615349258180369e-2 against 1e-2;
+- CUDA U, U2 and R matched bitwise on all 290 tensors;
+- checkpoint 1000 was unchanged.
+
+**The pilot is FAILED.** No gate, tolerance, reference file, dependency, hyperparameter or
+marker was changed.
+
+### Checks performed on the Mac
+
+| Check | Result |
+| --- | --- |
+| Reference fixture files | sha256 unchanged before and after (`.pt` `b5dc7081…3e74`, `.json` `0f3c4855…fd24`) |
+| `fixture_update_diagnostic.py run --device cpu` (`.venv`, torch 2.15.0, 17.5 s) on the original ckpt-0001000 → `runs/fixture_diag/mac_cpu` | identical batch (shape, 180 masked, digest), loss 0.6131473779678345 and pre-clip gradient norm 6.299320697784424 as the fixture; names and order equal the fixture's 290 `param_names`; per-tensor native gradient and update norms **bitwise equal** to the reference's `tensor_grad_norms` and `tensor_update_norms` |
+| Loaded optimizer | lr 3e-5, betas (0.9, 0.999), eps 1e-8, wd 0.01, amsgrad/maximize False, `foreach` False, `capturable` False, `differentiable` False, `fused` None; the saved group lists params 0–289; every state shape matches its parameter; every `step` is 1000.0 (fp32, CPU); `exp_avg`/`exp_avg_sq` bitwise equal to the file |
+| Repeat run (`mac_cpu_repeat`) and `compare` against the first | all differences exactly 0, alignment fields all equal; post-step embedding bitwise equal |
+| Embedding update norm, native fp32 vs float64 (same saved values) | 0.017708847299218178 vs 0.01789845506543277: relative 1.0594e-2. Next largest over the other 289 tensors 1.28e-4. Gradient norms (pre-clip): at most 6.1e-4 |
+| AdamW denominator at step 1001 (checkpoint `exp_avg_sq`, Mac gradient) | (√v̂ + ε)/ε < 2 for 133,337,355 of 136,134,656 embedding elements (41.5% of the squared update norm); 2–10: 2,306,368 (45.0%); 10–100: 386,502 (11.3%); ≥ 100: 104,431 (2.2%) |
+| `tests/test_fixture_diagnostic.py` + `test_tacc_env.py` + `test_tacc_scripts.py` | **31 passed**. New: chunk-independent float64 norm matching an `fsum` reference; the fixture's per-tensor filter; the memory summary separating allocated/reserved/device memory, recomputing `peak_memory_U`, listing warning lines with line numbers, and refusing a non-pilot directory; the diagnostic job writes no pass marker, does not run the fixture or training, is `--no-requeue`, and checks the origin; `fixture_diagnostic.slurm` added to the full-node, single-GPU launcher test |
+| `shellcheck` 0.11.0 on `fixture_diagnostic.slurm` | no findings |
+
+A first Mac run took its float64 gradient norms after clipping, which is not comparable with the native pre-clip norms. It was corrected, both Mac runs were repeated, and the earlier outputs were kept in `runs/fixture_diag/superseded-gradf64-postclip/`.
+
+### Not run
+
+- The TACC CPU and CUDA diagnostic runs (`fixture_diagnostic.slurm`), their comparisons
+  and the memory summary of pilot 3592809. Those outputs do not exist yet. Whether norm
+  accumulation explains the failure, and how the memory warnings classify, are **PENDING**.
+- The full test suite (only the targeted files above; no shared library code changed).

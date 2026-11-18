@@ -124,6 +124,17 @@ order. The user authenticates and submits every job:
 7. run `continuation.slurm` from the original checkpoint 1000;
 8. run `final_eval.slurm`.
 
+**Current state (2026-11-18).**
+- Environment check 3592790 passed.
+- Pilot 3592809 **failed** only the fixture's per-tensor update-norm check, on the
+  embedding: 0.0106 against 0.01. There is no `PILOT_PASSED`, so the continuation is
+  blocked.
+- A separate, bounded diagnostic is prepared (`docs/warmup_continuation.md` §11.5). Its
+  TACC job and results are PENDING.
+- On the Mac, the reference's own fp32 embedding-update norm is 1.06% below the float64
+  value. That would explain the failure if CUDA's norm is accurate; this is unconfirmed.
+- Any change to the official gate needs a decisions entry and the user's review.
+
 Each step's pass condition is in the runbook (§10 lists those required before the
 continuation). Record CUDA results in `verification.md` only after the job outputs
 exist. After the final comparison, the user decides which checkpoint becomes the
@@ -177,7 +188,7 @@ calibration table (`verification.md`) is the input to that choice.
 | `notebooks/colab_runner.ipynb` | Thin CUDA launcher for the same commands (not run) |
 | `scripts/gatec_inspect.py`, `select_calibration_settings.py`, `mutation_check_m3.py`, `mutation_check_d033.py` | Gate C inspection; D-031 stage-2 selection; milestone-3 and D-033 mutation checks |
 | `configs/train/warmup_continuation.yaml`, `configs/eval/monitor_val_stage2_first50.json` | D-033 continuation config (resume-compatible with `warmup_pilot.yaml`); the 500-problem monitoring subset |
-| `scripts/tacc/` | Lonestar6 runbook scripts (`docs/warmup_continuation.md`): `tacc_env.sh` (shared settings and checks), `stage_transfer.sh` (Mac), `install_transfer.sh`, `setup_env.sh`, `backup_to_ranch.sh`, `env_check.slurm`, `pilot.slurm`, `continuation.slurm`, `final_eval.slurm`; Python helpers `preflight_checkpoint.py`, `cuda_fixture.py`, `check_expected_batches.py`, `compare_preflight.py`, `continuation_status.py`, `pilot_report.py`, `compare_calibrations.py`, `make_monitor_subset.py`; Linux lock `requirements-tacc-lock.txt` (`compile_lock.sh`) |
+| `scripts/tacc/` | Lonestar6 runbook scripts (`docs/warmup_continuation.md`): `tacc_env.sh` (shared settings and checks), `stage_transfer.sh` (Mac), `install_transfer.sh`, `setup_env.sh`, `backup_to_ranch.sh`, `env_check.slurm`, `pilot.slurm`, `continuation.slurm`, `final_eval.slurm`; Python helpers `preflight_checkpoint.py`, `cuda_fixture.py`, `check_expected_batches.py`, `compare_preflight.py`, `continuation_status.py`, `pilot_report.py`, `compare_calibrations.py`, `make_monitor_subset.py`; pilot-3592809 diagnostic (not a gate) `fixture_update_diagnostic.py`, `summarize_pilot_memory.py`, `fixture_diagnostic.slurm`; Linux lock `requirements-tacc-lock.txt` (`compile_lock.sh`) |
 | `paper/methods.md` | Methods draft from verified code |
 
 Tests (225 in total with MPS available; 224 inside the sandbox):
@@ -397,6 +408,18 @@ as evidence.
   3592559, missing `lahf_lm`), so GPU jobs moved to full `gpu-a100` nodes with one GPU
   selected (D-035; 3 SU per node-hour, about ≲ 27 SU in total). A fresh environment check
   and the CUDA pilot must pass before the continuation (runbook §11.4). SU balance is unconfirmed.
+- **Pilot 3592809 failed the fixture's embedding update-norm check** (1.06153e-2 against
+  1e-2). Everything else in the pilot passed as reported, including bitwise-identical CUDA
+  U, U2 and R runs.
+  - Mac evidence: the reference's own fp32 norm is 1.0594e-2 below a float64 norm of the
+    same update. That points at norm accumulation, but it is not confirmed until the TACC
+    CPU and CUDA diagnostic exists (runbook §11.5).
+  - A second mechanism is still open: 98% of embedding elements have an AdamW denominator
+    near eps, which amplifies small gradient differences.
+  - The memory warnings the user mentioned have not been seen on the Mac, so their
+    classification (allocator recovery vs anything else) is unresolved.
+  - The application has no retry path. The pilot recorded no allocator retry or
+    out-of-memory counters; the diagnostic adds them for its own step only.
 - **The hardest pilot settings are near 0%** (length 6 with 3 digits: ≤ 2.5% at every
   budget), and wrong responses there contain about 4.8 wrong values. Those settings
   may give the correction arms little to work with. The pilot grid stays provisional
@@ -412,6 +435,9 @@ as evidence.
   limitation).
 
 **Unresolved choices:**
+- After the pilot-3592809 diagnostic: whether the fixture's update-norm gate should change
+  (for example to float64 norms against a new reference file next to the original), or the
+  failure is judged otherwise. This needs a decisions entry and the user's review.
 - After the D-033 continuation: which checkpoint becomes the milestone-4 generator;
   then the bank-collection budget and the primary budget.
 - D-011: β = 0.5 and the bin edges.

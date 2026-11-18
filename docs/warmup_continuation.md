@@ -531,6 +531,204 @@ rebuild).
 The continuation is submitted only after `PILOT_PASSED` and a time limit re-derived from
 the pilot report.
 
+### 11.5 Pilot 3592809 failed one fixture check: update-norm diagnostic (remote results PENDING)
+
+**Observed (reported by the user, 2026-11-18), at revision `00de61c`.**
+- Environment check 3592790 passed.
+- Pilot 3592809 failed only the fixture's `tensor_update_norm_rel` check:
+  `model.embed_tokens.weight`, relative difference 0.010615349258180369 against the
+  tolerance 0.01.
+- CUDA runs U, U2 and R matched bitwise across all 290 parameter tensors.
+- Checkpoint 1000 was unchanged.
+
+The pilot has **failed**, and there is no `PILOT_PASSED`. The continuation stays blocked.
+The fixture, its tolerances, the reference files, the dependencies, the hyperparameters and
+the pass markers are all unchanged.
+
+**Local evidence (Mac CPU, `.venv`, torch 2.15.0; `runs/fixture_diag/mac_cpu`).**
+`scripts/tacc/fixture_update_diagnostic.py run` repeats the fixture's training step on
+CPU: same batch and masks, fp32 loss, backward, clipping and AdamW step from checkpoint
+1000. Compared with the reference fixture (`runs/reference/cuda_pilot_fixture.*`, hashes
+unchanged), it reproduces:
+- all 290 per-tensor gradient norms and update norms **bitwise**;
+- the loss and the pre-clip gradient norm;
+- the batch digest and the parameter names and order.
+
+A second run was bitwise identical to the first. Skipping the fixture's generation step
+therefore does not change the update.
+
+On the same saved fp32 values, the native fp32 norm of the embedding update differs from
+a chunked CPU float64 norm:
+
+| Embedding update norm (Mac CPU) | Value |
+| --- | --- |
+| native fp32 (the fixture's formula, the reference value) | 0.017708847299218178 |
+| float64 on the saved pre/post fp32 weights | 0.01789845506543277 |
+| native relative to float64 | 1.0594e-2 |
+
+Over the other 289 tensors, the largest native-vs-float64 relative difference is 1.28e-4
+(`model.layers.6.mlp.gate_proj.weight`). For gradient norms, the largest native-vs-float64
+relative difference over all 290 tensors is 6.1e-4.
+
+The reference's own fp32 accumulation over 136,134,656 elements is therefore about 1.06%
+low. That is the size of the failure. If CUDA's native norm were exact, its relative
+difference from the reference would be 1.0707e-2. The reported 1.06153e-2 implies a CUDA
+native norm of about 0.0178966, within 1e-4 of the Mac float64 value.
+
+That is consistent with norm accumulation in the reference explaining the failure, but
+it is an inference. Only the TACC runs below can confirm it.
+
+**Second candidate mechanism (to be measured, not concluded).**
+- The embedding is tied to the output layer, so its gradient is dense.
+- 133.3M of the embedding's 136.1M elements (98%) have an AdamW denominator
+  \(\sqrt{\hat v} + \epsilon < 2\epsilon\) at step 1001. They carry 41% of the squared
+  update norm.
+- There, the update responds to the absolute gradient with a gain of order
+  lr·(1−β1)/(bias correction·ε), so small backend gradient differences can become visible
+  update differences.
+
+The diagnostic's elementwise comparison, split by this denominator, shows how much of the
+CUDA-vs-CPU update difference comes from those elements.
+
+**What the diagnostic records** (one disposable update per backend; nothing is saved as a
+checkpoint, and all training, clipping and optimizer arithmetic is fp32):
+- **Norms:** per-tensor native fp32 gradient and update norms, computed exactly as the
+  fixture does. Alongside them, float64 norms of the same quantities, computed on CPU in
+  fixed 4M-element chunks combined with `math.fsum` from the saved fp32 values.
+- **Raw embedding data:** the post-step fp32 embedding and its post-clip gradient (545 MB
+  each), plus the sha256 of the pre-step embedding.
+- **Alignment:**
+  - parameter names, shapes and order, against the reference's `param_names` and the
+    optimizer file;
+  - the optimizer settings actually loaded (the saved `param_groups` override the
+    constructor: lr 3e-5, betas (0.9, 0.999), eps 1e-8, weight_decay 0.01, `foreach`
+    False, `fused` None, `capturable` False, amsgrad and maximize False);
+  - the step counters (all 1000.0, fp32, CPU);
+  - bitwise equality of the loaded `exp_avg`/`exp_avg_sq` with the file, and their
+    float64 norms.
+- **CUDA allocator counters at each phase:** `allocated_bytes`/`reserved_bytes` current
+  and peak, `num_alloc_retries`, `num_ooms`, device alloc/free counts, and
+  `cudaMemGetInfo` used/total.
+- **GPU memory use:** the pre-step weights are copied to host memory rather than cloned on
+  the GPU (the fixture clones about 2 GB on the GPU). The native update norms use one
+  transient device tensor at a time.
+- **TACC CPU run:** it uses PyTorch's default thread count, which is recorded. CPU
+  reductions depend on the thread count, so the TACC CPU and Mac CPU runs are not
+  expected to match bitwise.
+
+`compare A B` (B is the reference side) checks that the records and files match their
+hashes and reports:
+- alignment equality: names, shapes, batch, settings, step values, moment norms, and the
+  pre-step embedding hash;
+- per-tensor native and float64 update and gradient norm differences, using the fixture's
+  filter;
+- for the embedding, elementwise:
+  - the bitwise-equal fraction;
+  - ‖Δ_A − Δ_B‖/‖Δ_B‖;
+  - the maximum absolute difference;
+  - the maximum relative difference where |Δ_B| ≥ 1e-6;
+  - the post-clip gradient difference;
+  - a split by AdamW denominator band (<2ε, 2–10ε, 10–100ε, ≥100ε);
+- a verdict: `norm_accumulation_explains_failure` is true when the native norms exceed
+  the tolerance and the float64 norms do not. The verdict also reports the TACC-native vs
+  Mac-float64 difference.
+
+**Memory records.** The pilot records `memory_snapshot` every update in U, U2 and R
+(`metrics.jsonl`, `memory`). Its fields mean different things:
+- `cuda_allocated_gb` / `cuda_peak_allocated_gb`: memory held by live tensors.
+- `cuda_reserved_gb` / `cuda_peak_reserved_gb`: memory the caching allocator holds,
+  including cached free blocks. Peaks are measured since process start; the trainer never
+  resets them.
+- `peak_memory_U` in `pilot_report.json`: the maximum of `cuda_peak_reserved_gb` over U,
+  i.e. peak reserved memory.
+- `cuda_device_used_gb`: total minus free from `cudaMemGetInfo`. It covers every context
+  and process on the GPU, so it is larger than reserved.
+
+The application has no out-of-memory handling or retry path anywhere in `src/` or
+`scripts/tacc/`, checked by code inspection:
+- `release_cached_memory` does nothing on CUDA;
+- the only CUDA `empty_cache` call is between benchmark configurations;
+- jobs are `--no-requeue`.
+
+The pilot did not record `num_alloc_retries` or `num_ooms`. The existing records
+therefore cannot show whether the CUDA caching allocator freed its cache and retried an
+allocation. The diagnostic records those counters for its own step. That is evidence about
+allocator behaviour for the fixture step only, not for U, U2 or R.
+
+`scripts/tacc/summarize_pilot_memory.py` tabulates the pilot's memory records and lists
+every warning, memory, allocator or retry line in the pilot's logs, with file and line
+number. The warning text has not been seen on the Mac, so how to classify it is
+**unresolved** until that summary exists.
+
+Adding the allocator counters to `memory_snapshot` for future runs would change shared
+code used by the continuation. It is proposed, not done.
+
+**Commands (the user runs them; nothing has been submitted).** `<new>` is the update commit
+that `stage_update.sh` prints.
+1. **Mac — stage the code-only update from `00de61c` and copy it** (prints the copy and
+   apply commands):
+   ```bash
+   DLMC_UPDATE_BASE=00de61cea020d4c568fdaf805f3fff1c8ecf7220 DLMC_REMOTE=ayuj@ls6.tacc.utexas.edu \
+       DLMC_REMOTE_ROOT=/work/10692/ayuj/ls6/dlmc scripts/tacc/stage_update.sh
+   ```
+2. **Mac — copy the Mac CPU diagnostic** (about 1.1 GB; refuses to overwrite):
+   ```bash
+   COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -cf - -C runs/fixture_diag mac_cpu \
+     | ssh ayuj@ls6.tacc.utexas.edu "D=/work/10692/ayuj/ls6/dlmc/diag_inputs; test ! -e \$D/mac_cpu \
+         && mkdir -p \$D && tar -xf - -C \$D"
+   ```
+3. **Login — preserve the failed pilot and its environment check; verify the Mac
+   diagnostic** (read-only, nothing moved or deleted):
+   ```bash
+   D=/work/10692/ayuj/ls6/dlmc
+   ls -ld $D/retained/pilot/3592809 $D/retained/env_check/3592790 $SCRATCH/dlmc/pilot/3592809 \
+       $D/repo/runs/slurm/dlmc-pilot-3592809.out $D/repo/runs/slurm/dlmc-envcheck-3592790.out
+   chmod -R a-w $D/retained/pilot/3592809 $D/retained/env_check/3592790 \
+       $D/repo/runs/slurm/dlmc-pilot-3592809.out $D/repo/runs/slurm/dlmc-envcheck-3592790.out
+   test ! -d $SCRATCH/dlmc/pilot/3592809 || chmod -R a-w $SCRATCH/dlmc/pilot/3592809
+   cd $D/diag_inputs/mac_cpu && sha256sum --strict -c SHA256SUMS \
+       && test "$(sha256sum SHA256SUMS | cut -d' ' -f1)" = 9151937d7aeb65aa5cf7ba6bed3aa89a40836164754a5dc54e1d7f21513d49bc \
+       && chmod -R a-w . && echo "MAC DIAG VERIFIED"
+   ```
+   `$SCRATCH` is purged after 10 days without access. The pilot's small records are in
+   `retained/`.
+4. **Login — verify and apply the update:** run the commands printed in step 1. The repo
+   must be at `00de61c` and clean. This adds files only; no existing script, lock or
+   setting changes.
+5. **GPU job — the diagnostic** (one `gpu-a100` node, 45-minute limit, so at most 2.25 SU;
+   expected well under that):
+   ```bash
+   cd $WORK/dlmc/repo && DLMC_MAC_DIAG=$WORK/dlmc/diag_inputs/mac_cpu \
+       DLMC_PILOT_DIR=$WORK/dlmc/retained/pilot/3592809 sbatch -A ASC26098 scripts/tacc/fixture_diagnostic.slurm
+   ```
+   Outputs go to `$WORK/dlmc/retained/fixture_diag/<jobid>/`:
+   - `tacc_cpu/` and `tacc_cuda/` (about 1.1 GB each);
+   - `compare_tacc_cuda_vs_mac.json`, `compare_tacc_cpu_vs_mac.json`,
+     `compare_tacc_cuda_vs_tacc_cpu.json`;
+   - `memory_summary.json`;
+   - the logs and the origin checks.
+6. **Return the small files** (from the Mac; excludes the `.pt` tensors):
+   ```bash
+   mkdir -p runs/fixture_diag/tacc && ssh ayuj@ls6.tacc.utexas.edu \
+       "cd /work/10692/ayuj/ls6/dlmc/retained/fixture_diag && tar --exclude='*.pt' -cf - <jobid>" \
+     | tar -xf - -C runs/fixture_diag/tacc
+   ```
+
+**Decision rule after the results (needs review; not applied).** The official gate is
+unchanged. If the comparisons show that norm accumulation in the reference explains the
+failure, any of these needs a decisions entry and the user's review before the pilot is
+rerun:
+- a gate change, such as computing the fixture's per-tensor norms in float64 on CPU in
+  both `make` and `check`, which would need a *new* reference file next to the original;
+- or keeping the gate and judging the failure to be an artefact of the reference.
+
+That condition is: the float64 embedding difference is well within 1e-2, the elementwise
+update difference is small, and alignment is exact.
+
+If instead the elementwise update difference is itself near 1e-2, the update genuinely
+differs. That needs its own explanation, for example the eps-dominated elements, and is
+not resolved by changing how norms are measured.
+
 ## 12. Local checks performed (Mac, 2026-11-17)
 
 - Preflight of checkpoint 1000 (`runs/preflight/ckpt-0001000-mac.json`): 14/14 checks.

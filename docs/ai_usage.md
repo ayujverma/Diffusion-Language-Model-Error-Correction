@@ -184,3 +184,22 @@ Human checks:
 
 Human checks:
 - None. The user ran the remote probe and reported its results.
+
+## 2026-11-18: Pilot 3592809 fixture update-norm diagnostic (Cursor agent, Claude model)
+
+- The user reported that pilot 3592809 failed only the fixture's embedding update-norm
+  check, and asked for a separate, bounded diagnostic without changing the gate.
+- The agent wrote:
+  - `fixture_update_diagnostic.py`, which repeats the fixture's training step and records
+    native fp32 and float64 norms, raw embedding values, alignment and optimizer state,
+    and allocator counters;
+  - `summarize_pilot_memory.py`;
+  - `fixture_diagnostic.slurm`;
+  - tests and runbook §11.5.
+- Ran on the Mac CPU only: two diagnostic runs, which reproduced the reference fixture's
+  norms bitwise, one comparison, and the targeted tests and `shellcheck`. Submitted
+  nothing.
+
+Human checks:
+- None. The remote facts are as reported by the user. Any gate change awaits the user's
+  review.
