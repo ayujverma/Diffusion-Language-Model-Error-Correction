@@ -14,7 +14,8 @@ pilot, backup, continuation and final evaluation. No CUDA result exists. Milesto
 (hash-verified) and the torch 2.15.0 environment build were done. Environment-check job
 3591308 stopped at the driver guard: the node has driver 570.195.03, and torch 2.15.0+cu132
 needs R580. No pilot or continuation has run. The fallback torch 2.14.1+cu126 is prepared
-(§11, D-034) but **not approved and not installed**; its remote validation is **PENDING**.
+(§11, D-034). The user **approved** it on 2026-11-17 for rebuilding and validating the
+environment; it is **not installed yet**, and its remote validation is **PENDING**.
 
 ## 1. What the continuation does
 
@@ -25,7 +26,7 @@ needs R580. No pilot or continuation has run. The fallback torch 2.14.1+cu126 is
 | Update cap | 10,000 **total** updates (at most 9,000 more) |
 | Training-time cap | 7,200 s of training-update time, counted from update 1000 across all jobs (§5) |
 | Early stopping | 3 consecutive scheduled evaluations without a strictly higher score (§5) |
-| Device | one NVIDIA A100 40 GB, `gpu-a100-small` queue, TF32 off; torch 2.14.1 + CUDA 12.6 if D-034 is approved (§11; the D-033 build, torch 2.15.0 + CUDA 13.2, cannot run on the R570 driver) |
+| Device | one NVIDIA A100 40 GB, `gpu-a100-small` queue, TF32 off; torch 2.14.1 + CUDA 12.6 (D-034, approved; §11; the D-033 build, torch 2.15.0 + CUDA 13.2, cannot run on the R570 driver) |
 
 The learning rate stays 3e-5 for the whole continuation: the schedule has no decay
 horizon, so neither the update cap nor resumes change it (preflight check).
@@ -90,7 +91,7 @@ only). Every model execution runs inside a Slurm job.
    `BACKUP VERIFIED` and writes `$WORK/dlmc/retained/backups/<tar>.record` only on a match.
 5. **Compute (interactive, cheap) — environment:**
    ```bash
-   idev -p vm-small -N 1 -n 1 -t 00:30:00      # 0.143 SU/node-hour, 0.25 h minimum
+   idev -A ASC26098 -p vm-small -N 1 -n 1 -t 00:30:00      # 0.143 SU/node-hour, 0.25 h minimum
    bash $WORK/dlmc/repo/scripts/tacc/setup_env.sh
    ```
    This installs uv 0.13.9 (tarball sha256 `a7fbaff2…71d5`) and uv-managed CPython
@@ -378,7 +379,7 @@ installed environment was CPython 3.14.7, torch 2.15.0, CUDA 13.2. The R580 guar
 stopped the job before the torch, test, doctor and preflight checks. No pilot or
 continuation has run. Checkpoint 1000 has a hash-verified Ranch backup.
 
-### 11.2 Proposed fallback (D-034): PROPOSED, NOT APPROVED, remote validation PENDING
+### 11.2 Fallback (D-034): APPROVED by the user 2026-11-17; remote validation PENDING
 
 Only the TACC environment changes; the Mac environment and every setting in §1, §5
 and §8 are unchanged, including all tolerances.
@@ -406,25 +407,30 @@ torch 2.15.0 checkpoint (optimizer state, RNG states) and reproduce the Mac-pred
 batches and RNG streams field by field. If it does not, the fallback fails; record it and
 stop.
 
-### 11.3 Commands, only after D-034 is approved
+### 11.3 Commands (D-034 approved; the user runs them)
 
-`<$WORK>` is the output of `echo $WORK` on ls6; `<update>` is the commit printed by
+`$WORK` on ls6 is `/work/10692/ayuj/ls6`, so `$WORK/dlmc` is `/work/10692/ayuj/ls6/dlmc`.
+`<update>` is the commit in `runs/tacc_update/944905e..<update>/COMMITS`, printed by
 step 1. Steps 2–4 run on a login node (file operations only); step 5 on a `vm-small`
-compute node; steps 6–7 are Slurm jobs.
+compute node; steps 6–7 are Slurm jobs. The environment check and the CUDA pilot stay
+mandatory before the continuation.
 
 1. **Mac — stage the code-only update** (no data, checkpoint or 7.24 GB bundle):
    ```bash
-   DLMC_REMOTE=ayuj@ls6.tacc.utexas.edu DLMC_REMOTE_ROOT=<$WORK>/dlmc scripts/tacc/stage_update.sh
+   DLMC_REMOTE=ayuj@ls6.tacc.utexas.edu DLMC_REMOTE_ROOT=/work/10692/ayuj/ls6/dlmc scripts/tacc/stage_update.sh
    ```
    It writes `runs/tacc_update/944905e..<update>/` (`dlmc-update.bundle`, `COMMITS`,
    `SHA256SUMS`, `DIFFSTAT.txt`) and prints the copy command and the apply commands
    with the exact commit IDs. Run the printed copy command (one ssh session).
 2. **Login — preserve the failed job's logs and the old environment** (nothing is
-   deleted; each `mv` refuses an existing target):
+   deleted; the originals stay in `joblogs/`; each `mv` refuses an existing target):
    ```bash
-   J=3591308; D=$WORK/dlmc
+   J=3591308; D=/work/10692/ayuj/ls6/dlmc
    mkdir -p $D/retained/env_check/$J
-   cp -p $D/repo/runs/slurm/dlmc-envcheck-$J.out $D/retained/env_check/$J/
+   cp -p $D/joblogs/env-check-$J.out $D/joblogs/env-check-$J.err $D/retained/env_check/$J/
+   cmp $D/joblogs/env-check-$J.out $D/retained/env_check/$J/env-check-$J.out
+   cmp $D/joblogs/env-check-$J.err $D/retained/env_check/$J/env-check-$J.err
+   chmod a-w $D/joblogs/env-check-$J.out $D/joblogs/env-check-$J.err
    chmod -R a-w $D/retained/env_check/$J
    test ! -e $D/env.torch2150-cu132 && mv $D/env $D/env.torch2150-cu132 && chmod -R a-w $D/env.torch2150-cu132
    test ! -e $SCRATCH/dlmc/venv.torch2150-cu132 && mv $SCRATCH/dlmc/venv $SCRATCH/dlmc/venv.torch2150-cu132
@@ -434,7 +440,7 @@ compute node; steps 6–7 are Slurm jobs.
    `tar -C $SCRATCH/dlmc -cf $D/venv.torch2150-cu132.tar venv.torch2150-cu132`.
 3. **Login — verify and apply the update** (the commands printed in step 1):
    ```bash
-   U=$WORK/dlmc/updates/944905e..<update>; R=$WORK/dlmc/repo
+   U=/work/10692/ayuj/ls6/dlmc/updates/944905e..<update>; R=/work/10692/ayuj/ls6/dlmc/repo
    cd $U && sha256sum --strict -c SHA256SUMS
    test "$(git -C $R rev-parse HEAD)" = 944905e071572a8f82bb432526ea4cfe9950ed73
    test -z "$(git -C $R status --porcelain --untracked-files=no)"
@@ -449,8 +455,8 @@ compute node; steps 6–7 are Slurm jobs.
    `cd $WORK/dlmc/transfer && sha256sum --quiet --strict -c runs/tacc_transfer/MANIFEST.sha256 && echo TRANSFER VERIFIED`
 5. **Compute (`vm-small`) — rebuild the environment:**
    ```bash
-   idev -p vm-small -N 1 -n 1 -t 00:30:00
-   bash $WORK/dlmc/repo/scripts/tacc/setup_env.sh
+   idev -A ASC26098 -p vm-small -N 1 -n 1 -t 00:30:00
+   bash /work/10692/ayuj/ls6/dlmc/repo/scripts/tacc/setup_env.sh
    ```
    It needs network access to PyPI and `download-r2.pytorch.org`.
 6. **GPU job — fresh environment check:**

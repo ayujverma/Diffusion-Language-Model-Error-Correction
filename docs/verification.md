@@ -847,7 +847,7 @@ Ranch):
   needs a clean tree; its outcome is reported outside this file.
 - No test-split evaluation, draft-bank collection or correction training. No human review.
 
-## TACC compatibility fallback D-034 (2026-11-17, Mac only; PROPOSED, NOT APPROVED)
+## TACC compatibility fallback D-034 (2026-11-17, Mac only; approved by the user afterwards, remote validation PENDING)
 
 **Remote evidence (reported by the user, not re-checked here).** Lonestar6 environment-check
 job 3591308 at `944905e` (ASC26098, `gpu-a100-small`, `v330-007.ls6.tacc.utexas.edu`, one

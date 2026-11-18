@@ -166,4 +166,6 @@ Human checks:
   the guards, `bash -n` and `shellcheck`. Submitted nothing and ran nothing on TACC.
 
 Human checks:
-- None. D-034 awaits the user's approval.
+- The user approved D-034 on 2026-11-17 for rebuilding and validating the TACC
+  environment, and supplied the job-log paths and the `$WORK` path used in runbook §11.3.
+  No human has reviewed the code.

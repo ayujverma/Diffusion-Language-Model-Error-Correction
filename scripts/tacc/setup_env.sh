@@ -1,6 +1,6 @@
 #!/bin/bash
 # RUNS ON: Lonestar6, in a cheap interactive compute session (TACC installs environments from
-# compute nodes): idev -p vm-small -N 1 -n 1 -t 00:30:00. Downloads and installs only; nothing
+# compute nodes): idev -A ASC26098 -p vm-small -N 1 -n 1 -t 00:30:00. Downloads and installs only; nothing
 # imports torch here. Builds $SCRATCH/dlmc/venv: uv $DLMC_UV_VERSION (sha256-checked), CPython
 # $DLMC_PYTHON_VERSION, and every package from scripts/tacc/requirements-tacc-lock.txt with
 # --require-hashes (torch $DLMC_TORCH_VERSION by direct URL from download-r2.pytorch.org, everything

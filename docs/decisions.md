@@ -582,8 +582,11 @@ continuation result.** Runbook: `docs/warmup_continuation.md`.
   decides after the comparison, and a new entry records it. The bank-collection
   budget and the final primary budget stay unselected. Test splits stay untouched.
 
-**D-034 (2026-11-17) PROPOSED, NOT APPROVED: torch 2.14.1+cu126 on Lonestar6 for an R570
-driver.** Requires the user's explicit approval before the update is applied on TACC.
+**D-034 (2026-11-17) APPROVED: torch 2.14.1+cu126 on Lonestar6 for an R570 driver.**
+- **Approval.** The user approved this fallback on 2026-11-17 (23:38 UTC-6) for rebuilding
+  and validating the TACC environment. The approval does not waive any gate: a fresh
+  environment check and the CUDA pilot must pass before the continuation. Remote
+  execution is the user's; none has happened at the time of this entry.
 - **Observed.** Environment-check job 3591308 (account ASC26098, `gpu-a100-small`, node
   `v330-007.ls6.tacc.utexas.edu`, one NVIDIA A100-PCIE-40GB) at commit `944905e` with the
   D-033 environment (CPython 3.14.7, torch 2.15.0, CUDA 13.2). The driver is 570.195.03;
