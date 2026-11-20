@@ -496,6 +496,10 @@ def main(argv: list[str] | None = None) -> int:
     cr.add_argument("--out", default=None)
     cr.set_defaults(func=cmd_compare_runs)
 
+    from .drafts.commands import register as register_bank_commands
+
+    register_bank_commands(sub)
+
     args = p.parse_args(argv)
     return args.func(args)
 
