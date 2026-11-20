@@ -1,0 +1,59 @@
+# Shared non-weight settings for the milestone-5 four-way screen (+ low/shuffled).
+# Arm YAMLs copy these and change only run_name + weighting.rule (D-044).
+# Do not submit this file alone: it has rule=uniform as a placeholder.
+run_name: m5-screen-shared-template
+seed: 20261120
+backbone: open-dcoder
+model_dir: runs/hf/open-dcoder-0.5B
+# TACC path; override locally with --init-checkpoint if needed.
+init_checkpoint: /work/10692/ayuj/ls6/dlmc/retained/warmup-pilot-v1-cont/checkpoints/ckpt-0008000
+data:
+  dir: runs/data/pilot-seed20261116
+  manifest_sha256: 990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536
+  verify: true
+bank:
+  dir: /work/10692/ayuj/ls6/dlmc/retained/bank/m4-ckpt8000-v1
+  identity_sha256: e3e810bef987753ebdb8c9cf002de0f113eb9c4e5c61843094893ca5b22203ea
+  manifest_sha256: c5901617bbc6467483d1a91d8679c881dc055d62bbe993aa03fe181092e71ac4
+  split: train
+  budgets: ["1", "2", "4", "8", "L"]
+  verify_shards: true
+weighting:
+  rule: uniform
+  beta: 0.5
+  stage_edges: [0.2, 0.4, 0.6, 0.8]
+  shuffle_seed: 20261120
+objective:
+  lambda: 1.0
+  mu: 1.0
+method: full
+dtype: float32
+autocast: null
+batch_size: 32
+optimizer: {name: adamw, lr: 3.0e-5, betas: [0.9, 0.999], eps: 1.0e-8, weight_decay: 0.01}
+scheduler: {name: linear_warmup_constant, warmup_updates: 20}
+clip_grad_norm: 1.0
+mask: {t_min: 0.002, t_max: 0.998}
+limits:
+  max_updates: 1000
+  max_wall_seconds: null
+  max_train_seconds: null
+  stop_at_unix: null
+checkpoint:
+  every_updates: 250
+  keep_last: 2
+  durable_dir: null
+  protect_updates: []
+  protect_every: 500
+eval:
+  every_updates: 250
+  at_start: true
+  batch_size: 32
+  repair:
+    split: val
+    budget: "4"
+    n_examples: null
+    subset_seed: 0
+log_every: 10
+memory_every: 50
+release_cache_every: 1
