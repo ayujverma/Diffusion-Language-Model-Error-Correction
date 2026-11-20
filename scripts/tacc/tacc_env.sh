@@ -41,6 +41,14 @@ DLMC_RUN_NAME=warmup-pilot-v1-cont
 DLMC_CONT_RUN_DIR=$DLMC_SCRATCH/runs/$DLMC_RUN_NAME
 DLMC_CONT_DURABLE=$DLMC_RETAINED/$DLMC_RUN_NAME          # trainer writes <durable_dir>/<run_name>/checkpoints
 DLMC_STAGE2_SETTINGS=arithmetic:2:1,arithmetic:6:3,arithmetic:4:1,arithmetic:2:2,arithmetic:4:2,programs:2:1,programs:6:3,programs:2:2,programs:2:3,programs:4:2
+# Milestone 4 (D-038): the frozen generator, its validation records (job 3595133) and the bank root.
+DLMC_GEN=$DLMC_CONT_DURABLE/checkpoints/ckpt-0008000
+DLMC_GEN_UPDATE=8000
+DLMC_GEN_MODEL_SHA256=a5ceb4ffbf70ecc49e9fb48d7a0cdd01ccafa4ce81a6b2f91c73e0bd1b755341
+DLMC_GEN_IDENTITY=$DLMC_RETAINED/generator/ckpt-0008000.identity.json
+DLMC_GEN_EVAL_RECORDS=$DLMC_RETAINED/final_eval/selected-ckpt-0008000-cuda/records.jsonl
+DLMC_GEN_EVAL_RECORDS_SHA256=9f332bbcaedf1075c4dbf19be304806453e5a38d98664193ca864330f3c6d8e7
+DLMC_BANK_ROOT=$DLMC_RETAINED/bank
 DLMC_UV_VERSION=0.13.9
 DLMC_UV_SHA256=a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5
 DLMC_PYTHON_VERSION=3.14.7

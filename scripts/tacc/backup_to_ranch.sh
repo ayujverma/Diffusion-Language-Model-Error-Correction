@@ -5,6 +5,9 @@
 #
 #   bash scripts/tacc/backup_to_ranch.sh ckpt1000                 # checkpoint 1000 + its run logs, data,
 #                                                                 # calibration, fixture, manifest, code bundle
+#   bash scripts/tacc/backup_to_ranch.sh ckpt8000                 # milestone-4 generator + continuation logs,
+#                                                                 # final-eval records, generator identity
+#   bash scripts/tacc/backup_to_ranch.sh bank:<bank name>         # a finalized draft bank (re-verified first)
 #   bash scripts/tacc/backup_to_ranch.sh <name> <path under $WORK/dlmc> [...]   # e.g. later retained checkpoints
 #
 # Needs $ARCHIVER and $ARCHIVE (set by TACC on login nodes) and a Ranch allocation.
@@ -18,6 +21,21 @@ if [[ "$NAME" == ckpt1000 && $# -eq 0 ]]; then
            transfer/runs/reference transfer/runs/preflight transfer/runs/tacc_transfer
     cd "$DLMC_TRANSFER"
     sha256sum --quiet --strict -c runs/tacc_transfer/MANIFEST.sha256 || die "transfer no longer verifies"
+elif [[ "$NAME" == ckpt8000 && $# -eq 0 ]]; then
+    # The milestone-4 generator (D-038), the continuation's logs and evaluation records, and its identity.
+    cd "$DLMC_REPO"
+    "$DLMC_PY" scripts/tacc/generator_identity.py --check --checkpoint "$DLMC_GEN" \
+        --model-sha256 "$DLMC_GEN_MODEL_SHA256" --update "$DLMC_GEN_UPDATE" --eval-records "$DLMC_GEN_EVAL_RECORDS" \
+        --eval-records-sha256 "$DLMC_GEN_EVAL_RECORDS_SHA256" --out "$DLMC_GEN_IDENTITY" \
+        || die "checkpoint 8000 does not verify against its recorded identity"
+    set -- retained/warmup-pilot-v1-cont/checkpoints/ckpt-0008000 retained/warmup-pilot-v1-cont/logs \
+           retained/final_eval retained/generator
+elif [[ "$NAME" == bank:* && $# -eq 0 ]]; then
+    BANK_NAME=${NAME#bank:}
+    NAME=bank-$BANK_NAME
+    cd "$DLMC_REPO"
+    "$DLMC_PY" scripts/tacc/bank_status.py "$DLMC_BANK_ROOT/$BANK_NAME" --verify || die "bank does not verify"
+    set -- "retained/bank/$BANK_NAME" "retained/bank/$BANK_NAME.jobs"
 fi
 (( $# > 0 )) || die "no paths given"
 cd "$DLMC_ROOT"
