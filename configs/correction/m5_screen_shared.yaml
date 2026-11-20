@@ -29,7 +29,7 @@ objective:
 method: full
 dtype: float32
 autocast: null
-batch_size: 32
+batch_size: 16
 optimizer: {name: adamw, lr: 3.0e-5, betas: [0.9, 0.999], eps: 1.0e-8, weight_decay: 0.01}
 scheduler: {name: linear_warmup_constant, warmup_updates: 20}
 clip_grad_norm: 1.0
@@ -48,7 +48,7 @@ checkpoint:
 eval:
   every_updates: 250
   at_start: true
-  batch_size: 32
+  batch_size: 16
   repair:
     split: val
     budget: "4"

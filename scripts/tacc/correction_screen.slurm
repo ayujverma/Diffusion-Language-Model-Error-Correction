@@ -73,10 +73,15 @@ run_step() {
     return "$rc"
 }
 
+# Dual forward (L_mask + correction) OOM'd at batch 32 on A100 40GB (job 3600168).
+# Default 16; override with DLMC_CORR_BATCH if needed (identical across arms).
+BATCH=${DLMC_CORR_BATCH:-16}
+
 RC=0
 run_step "$DLMC_CLI" train-correction --config "$CONFIG" --device cuda \
     --run-dir "$RUN_DIR" --durable-dir "$DURABLE" --bank-dir "$BANK" \
     --init-checkpoint "$DLMC_GEN" --stop-at-unix "$STOP_AT" \
+    --set "batch_size=${BATCH}" "eval.batch_size=${BATCH}" \
     "${RESUME_ARGS[@]}" || RC=$?
 
 mkdir -p "$DURABLE/$RUN_NAME"
