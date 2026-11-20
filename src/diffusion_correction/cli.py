@@ -2,8 +2,8 @@
 
 Commands: ``doctor``, ``download-backbone`` (milestone 1); ``generate-data``,
 ``verify-data``, ``inspect-example`` (milestone 2); ``train``, ``benchmark``,
-``precision-check``, ``calibrate``, ``compare-runs`` (milestone 3). Later milestones
-add collect-drafts and the rest.
+``precision-check``, ``calibrate``, ``compare-runs`` (milestone 3); bank commands
+(milestone 4); ``train-correction``, ``evaluate-repair`` (milestone 5).
 """
 
 from __future__ import annotations
@@ -372,6 +372,79 @@ def cmd_calibrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_train_correction(args: argparse.Namespace) -> int:
+    from .training.correction_config import load_correction_config
+    from .training.correction_run import prepare_correction_trainer
+
+    overrides = dict(kv.split("=", 1) for kv in args.set or [])
+    overrides = {k: _yaml_value(v) for k, v in overrides.items()}
+    if args.seed is not None:
+        overrides["seed"] = args.seed
+    if args.max_updates is not None:
+        overrides["limits.max_updates"] = args.max_updates
+    if args.max_wall_seconds is not None:
+        overrides["limits.max_wall_seconds"] = args.max_wall_seconds
+    if args.durable_dir is not None:
+        overrides["checkpoint.durable_dir"] = args.durable_dir
+    if args.max_train_seconds is not None:
+        overrides["limits.max_train_seconds"] = args.max_train_seconds
+    if args.stop_at_unix is not None:
+        overrides["limits.stop_at_unix"] = args.stop_at_unix
+    if args.bank_dir is not None:
+        overrides["bank.dir"] = args.bank_dir
+    if args.init_checkpoint is not None:
+        overrides["init_checkpoint"] = args.init_checkpoint
+    cfg = load_correction_config(args.config, overrides)
+    device = resolve_device(args.device)
+    run_dir = Path(args.run_dir or f"runs/correction/{cfg['run_name']}")
+    trainer = prepare_correction_trainer(cfg, device, run_dir, args.resume)
+    print(json.dumps(trainer.describe(), indent=2))
+    print(json.dumps({"environment": environment_report(device)}, default=str), flush=True)
+
+    def request_stop(signum, _frame):
+        trainer.stop_signal = signal.Signals(signum).name
+        print(f"received {trainer.stop_signal}; stopping after the current update", flush=True)
+
+    for sig in (signal.SIGUSR1, signal.SIGTERM):
+        signal.signal(sig, request_stop)
+    summary = trainer.train()
+    print(json.dumps(summary, indent=2, default=str))
+    return 0
+
+
+def cmd_evaluate_repair(args: argparse.Namespace) -> int:
+    from .evaluation.repair import make_allowed_for_adapter, repair_drafts, summarize_repair
+    from .training.bank_data import load_bank_drafts
+    from .training.model_io import load_trained_adapter
+    from .training.run import sampler_allowed, task_format
+
+    device = resolve_device(args.device)
+    drafts, ident = load_bank_drafts(
+        args.bank_dir, identity_sha256=args.identity_sha256, manifest_sha256=args.manifest_sha256,
+        split=args.split, budgets=[args.budget], verify_shards=bool(args.verify_shards))
+    if args.n_examples is not None:
+        drafts = drafts[: int(args.n_examples)]
+    adapter, model_id = load_trained_adapter(args.checkpoint, device, args.model_dir)
+    if args.data_dir:
+        _, tf = task_format(args.model_dir, args.data_dir)
+        allowed = sampler_allowed(adapter, tf)
+    else:
+        allowed = make_allowed_for_adapter(adapter)
+    records = repair_drafts(adapter, drafts, batch_size=args.batch_size, allowed=allowed)
+    summary = summarize_repair(records)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    meta = {"command": "evaluate-repair", "time_utc": datetime.now(timezone.utc).isoformat(),
+            "checkpoint": args.checkpoint, "model": model_id, "bank_identity": ident.to_dict(),
+            "n_drafts": len(drafts), "budget": args.budget, "split": args.split}
+    (out / "summary.json").write_text(json.dumps({"meta": meta, "repair": summary}, indent=2) + "\n")
+    with open(out / "records.jsonl", "w") as f:
+        for r in records:
+            f.write(json.dumps(r, sort_keys=True) + "\n")
+    print(json.dumps({"repair": summary, "out": str(out)}, indent=2))
+    return 0
+
+
 def cmd_compare_runs(args: argparse.Namespace) -> int:
     from .evaluation.compare import compare_runs
 
@@ -495,6 +568,38 @@ def main(argv: list[str] | None = None) -> int:
     cr.add_argument("--divergence-rtol", type=float, default=None)
     cr.add_argument("--out", default=None)
     cr.set_defaults(func=cmd_compare_runs)
+
+    tc = sub.add_parser("train-correction", help="shared-bank correction training (milestone 5 screen)")
+    tc.add_argument("--config", required=True)
+    tc.add_argument("--run-dir", default=None, help="default runs/correction/<run_name>")
+    tc.add_argument("--device", default="auto", choices=["cpu", "mps", "cuda", "auto"])
+    tc.add_argument("--resume", default=None, help="'auto' or a checkpoint directory")
+    tc.add_argument("--seed", type=int, default=None)
+    tc.add_argument("--max-updates", type=int, default=None)
+    tc.add_argument("--max-wall-seconds", type=float, default=None)
+    tc.add_argument("--max-train-seconds", type=float, default=None)
+    tc.add_argument("--stop-at-unix", type=float, default=None)
+    tc.add_argument("--durable-dir", default=None)
+    tc.add_argument("--bank-dir", default=None, help="override bank.dir")
+    tc.add_argument("--init-checkpoint", default=None, help="override init_checkpoint (ckpt-0008000)")
+    tc.add_argument("--set", nargs="*", default=[], help="dotted.key=YAML_VALUE overrides")
+    tc.set_defaults(func=cmd_train_correction)
+
+    er = sub.add_parser("evaluate-repair", help="held-out complete-draft repair on bank drafts")
+    er.add_argument("--checkpoint", required=True)
+    er.add_argument("--bank-dir", required=True)
+    er.add_argument("--identity-sha256", required=True)
+    er.add_argument("--manifest-sha256", required=True)
+    er.add_argument("--split", default="val", choices=["train", "val"])
+    er.add_argument("--budget", default="4", help="primary comparison budget (D-044 default: 4)")
+    er.add_argument("--n-examples", type=int, default=None)
+    er.add_argument("--batch-size", type=int, default=32)
+    er.add_argument("--verify-shards", action="store_true", default=False)
+    er.add_argument("--data-dir", default=None, help="for D-029 allowed-token mask via task format")
+    er.add_argument("--model-dir", default="runs/hf/open-dcoder-0.5B")
+    er.add_argument("--device", default="auto", choices=["cpu", "mps", "cuda", "auto"])
+    er.add_argument("--out", required=True)
+    er.set_defaults(func=cmd_evaluate_repair)
 
     from .drafts.commands import register as register_bank_commands
 
