@@ -1,0 +1,42 @@
+# Milestone-4 immutable draft bank (train + validation only; D-037..D-039).
+# ALTERNATIVE scope (D-039 option B): only the 10 stage-2 calibration settings, both splits,
+# budgets 1,2,4,8,L. NOT APPROVED: the user chose the full scope (D-041). Do not submit.
+name: m4-ckpt8000-stage2-v1
+
+generator:
+  # Approved by the user as the generator (D-038). The path is given on the command line.
+  run: warmup-pilot-v1-cont
+  update: 8000
+  model_sha256: a5ceb4ffbf70ecc49e9fb48d7a0cdd01ccafa4ce81a6b2f91c73e0bd1b755341
+
+data:
+  dir: runs/data/pilot-seed20261116
+  manifest_sha256: 990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536
+  order: [val, train]            # validation shards first (they reproduce job 3595133's batches)
+  splits:
+    val:
+      sha256: ae3333a7a9175ecd6b6b9dbc2c199def19580d0491e03f830f212955fac6d566
+      n_examples: 3600
+      settings: ["arithmetic:2:1", "arithmetic:6:3", "arithmetic:4:1", "arithmetic:2:2", "arithmetic:4:2", "programs:2:1", "programs:6:3", "programs:2:2", "programs:2:3", "programs:4:2"]  # 10 x 200
+      shard_problems: 200
+    train:
+      sha256: 215fdb4a8116f16925f0236f5d96718b51d5f22f81e4ef8d58fe94677ee2e18a
+      n_examples: 18000
+      settings: ["arithmetic:2:1", "arithmetic:6:3", "arithmetic:4:1", "arithmetic:2:2", "arithmetic:4:2", "programs:2:1", "programs:6:3", "programs:2:2", "programs:2:3", "programs:4:2"]  # 10 x 1000
+      shard_problems: 250
+
+sampler:
+  name: d029_monotone_greedy     # greedy argmax over the allowed set, rank by raw full-vocab log prob
+  budgets: [1, 2, 4, 8, L]       # model calls per draft; L = one token per call
+  drafts_per_problem_per_budget: 1
+  rng: none                      # greedy: no random numbers are consumed
+  batch_size: 50                 # file order within a setting, as in job 3595133
+  precision: fp32                # TF32 off, matmul precision "highest" (resolve_device)
+
+preflight:
+  reference_records_sha256: 9f332bbcaedf1075c4dbf19be304806453e5a38d98664193ca864330f3c6d8e7
+  batches:
+    - {split: val, setting: "arithmetic:4:2", budget: L, n: 50}
+    - {split: val, setting: "programs:6:3", budget: 4, n: 50}
+    - {split: val, setting: "arithmetic:2:1", budget: 1, n: 50}
+    - {split: train, setting: "programs:4:2", budget: 8, n: 50}
