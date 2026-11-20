@@ -105,8 +105,8 @@ def test_tie_rules_smallest_token_then_leftmost_position():
     assert ev.raw_logp < ev.policy_logp  # raw and restricted probabilities are kept distinct
 
 
-def test_ranking_uses_raw_probability_of_the_selected_candidate():
-    """Position scores differ only through the forbidden mass in the raw normaliser."""
+def test_ranking_uses_raw_full_vocabulary_score_not_restricted_policy():
+    """Position scores differ only through forbidden mass in the unrestricted normaliser."""
 
     class PosModel(nn.Module):
         def __init__(self):
@@ -128,6 +128,54 @@ def test_ranking_uses_raw_probability_of_the_selected_candidate():
     order = [next(i for i in range(4) if t[i] != MASK and (s == 0 or res.traces[0][s - 1][i] == MASK))
              for s, t in enumerate(res.traces[0])]
     assert order == [0, 1, 3, 2]
+
+
+def test_ranking_sort_key_is_float32_log_softmax_not_probability():
+    """The unchanged D-029 sampler ranks by float32 log_softmax (raw_logp); it never calls exp.
+
+    D-029's decision text said "probability"; the code that satisfied it (and every generation
+    since, including job 3595133) sorts by ``-score`` with ``score = log_softmax(rows)[cand]``.
+    Ranking by float32 ``exp(score)`` is not equivalent: distinct logs can share one float32
+    probability (underflow to 0, or other non-injective exp), so ties and then position order
+    would differ. Generation must not be rewritten to rank by probability.
+    """
+    # Float32 fact used below: two distinct logs both exp to 0.
+    lo = torch.tensor(-120.0, dtype=torch.float32)
+    hi = torch.tensor(-104.0, dtype=torch.float32)
+    assert float(lo) != float(hi)
+    assert float(torch.exp(lo)) == 0.0 == float(torch.exp(hi))
+
+    class UnderflowModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.w = nn.Parameter(torch.zeros(1))
+
+        def forward(self, input_ids, attention_mask):
+            B, L = input_ids.shape
+            out = torch.full((B, L, V), -1.0e9, dtype=torch.float32)
+            out[..., 4] = 0.0
+            # Prompt length 3: response pos 0 <- raw row 2; pos 1 <- raw row 3.
+            # Worse log at the LEFT position so log-ranking and prob-ranking (tie -> left) disagree.
+            out[:, 2, MASK] = 120.0   # log_softmax(cand) ≈ -120 at response pos 0
+            out[:, 3, MASK] = 104.0   # log_softmax(cand) ≈ -104 at response pos 1
+            return out
+
+    adapter = DiffusionAdapter(model=UnderflowModel(), tokens=TINY_TOKENS)
+    # T=2: call 1 reveals one position. Log ranking picks pos 1; float32-prob ranking would
+    # tie at 0 and then pick the left position (pos 0).
+    res = monotone_unmask(adapter, [[10, 11, 12]], [2], 2, tiny_allowed(), record_traces=True)
+    assert res.traces[0][0] == [MASK, 4]
+    assert res.traces[0][1] == [4, 4]
+    ev = {e.position: e for e in res.events}
+    assert ev[1].raw_logp > ev[0].raw_logp
+    assert float(torch.exp(torch.tensor(ev[0].raw_logp, dtype=torch.float32))) == 0.0
+    assert float(torch.exp(torch.tensor(ev[1].raw_logp, dtype=torch.float32))) == 0.0
+    # Stored score is the log value, not the probability.
+    row1 = torch.full((V,), -1.0e9, dtype=torch.float32)
+    row1[4] = 0.0
+    row1[MASK] = 104.0
+    assert ev[1].raw_logp == float(torch.log_softmax(row1, -1)[4])
+    assert ev[1].raw_logp != float(torch.softmax(row1, -1)[4])
 
 
 def test_outputs_do_not_depend_on_reference_answers():
