@@ -8,6 +8,7 @@
 #   bash scripts/tacc/backup_to_ranch.sh ckpt8000                 # milestone-4 generator + continuation logs,
 #                                                                 # final-eval records, generator identity
 #   bash scripts/tacc/backup_to_ranch.sh bank:<bank name>         # a finalized draft bank (re-verified first)
+#   bash scripts/tacc/backup_to_ranch.sh correction:m5            # milestone-5 screen + repair under retained/correction
 #   bash scripts/tacc/backup_to_ranch.sh <name> <path under $WORK/dlmc> [...]   # e.g. later retained checkpoints
 #
 # Needs $ARCHIVER and $ARCHIVE (set by TACC on login nodes) and a Ranch allocation.
@@ -36,6 +37,11 @@ elif [[ "$NAME" == bank:* && $# -eq 0 ]]; then
     cd "$DLMC_REPO"
     "$DLMC_PY" scripts/tacc/bank_status.py "$DLMC_BANK_ROOT/$BANK_NAME" --verify || die "bank does not verify"
     set -- "retained/bank/$BANK_NAME" "retained/bank/$BANK_NAME.jobs"
+elif [[ "$NAME" == correction:m5 && $# -eq 0 ]]; then
+    # Milestone-5 screen outputs (all arms + repair records). Re-verify is left to the user.
+    cd "$DLMC_REPO"
+    [[ -d "$DLMC_RETAINED/correction" ]] || die "missing $DLMC_RETAINED/correction"
+    set -- retained/correction
 fi
 (( $# > 0 )) || die "no paths given"
 cd "$DLMC_ROOT"
