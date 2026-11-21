@@ -42,7 +42,9 @@ mkdir -p "$JOBDIR" "$DLMC_SCRATCH/runs/correction" runs/slurm
 echo "arm=$ARM config=$CONFIG run=$RUN_NAME bank=$BANK jobdir=$JOBDIR"
 
 MARGIN=${DLMC_STOP_MARGIN_SECONDS:-1800}
-END=$(squeue -h -j "$SLURM_JOB_ID" -o %e)
+# Array parent job IDs can return one EndTime line per task; take a single line (D-048).
+END=$(squeue -h -j "$SLURM_JOB_ID" -o %e | sort -u | head -n 1)
+[[ -n "$END" ]] || die "squeue returned no EndTime for job $SLURM_JOB_ID"
 END_UNIX=$(date -d "$END" +%s) || die "cannot parse job end time '$END'"
 STOP_AT=$(( END_UNIX - MARGIN ))
 (( STOP_AT > $(date +%s) + 600 )) || die "less than 10 min before the stop deadline; raise -t"

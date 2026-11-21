@@ -40,7 +40,9 @@ if [[ "$(readlink -f "$DLMC_RESUME_FROM")" == "$(readlink -f "$DLMC_ORIGIN")" ]]
     RESUME=$DLMC_ORIGIN_REL      # the path recorded with the checkpoint's data and model identities
 fi
 
-END=$(squeue -h -j "$SLURM_JOB_ID" -o %e)
+# Array parent job IDs can return one EndTime line per task; take a single line (D-048).
+END=$(squeue -h -j "$SLURM_JOB_ID" -o %e | sort -u | head -n 1)
+[[ -n "$END" ]] || die "squeue returned no EndTime for job $SLURM_JOB_ID"
 END_UNIX=$(date -d "$END" +%s) || die "cannot parse job end time '$END'"
 STOP_AT=$(( END_UNIX - MARGIN ))
 (( STOP_AT > $(date +%s) + 1800 )) || die "less than 30 min of training time before the stop deadline; raise -t"
