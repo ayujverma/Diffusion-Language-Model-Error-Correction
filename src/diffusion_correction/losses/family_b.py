@@ -3,14 +3,15 @@
 ProSeCo arms share one online draft. ``z_t`` masks the gold response. The first
 forward keeps a gradient for ``L_mask`` and, under stop-grad, writes an allowed-set
 argmax at every editable position. The second forward is the corrector. ``a(t) = 1/t``
-multiplies the corrector only. SCOPE is added after Q-5 is closed; it is not this file's
-ProSeCo path.
+multiplies the corrector only. SCOPE (D-052) is a separate step in this file:
+its draft pass is ``no_grad``, and it does not use ``a(t)`` or rank weights.
 
 These are adaptations to Open-dCoder. They are not reproductions of the papers.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -21,7 +22,7 @@ from ..models.alignment import SequenceLayout, assert_targets_predictable
 from ..sampling.candidates import greedy_allowed
 from .correction import token_error_masks
 from .masked import masked_diffusion_loss
-from .token_ce import zero_with_graph
+from .token_ce import selected_token_ce, zero_with_graph
 from .weighting import DEFAULT_STAGE_EDGES, compute_error_weights, stage_bin
 
 PROSECO_ARMS = ("proseco_basic", "proseco_error_prioritized", "proseco_gen_conf")
@@ -289,3 +290,177 @@ def proseco_training_step(adapter: DiffusionAdapter, layout: SequenceLayout,
     return ProsecoStep(loss=loss, l_mask=l_mask_out.loss, l_corr=terms.loss, draft_ids=draft.detach(),
                        z_ids=z_ids.detach(), first_tokens=cand.detach(), log_c=log_c_map.detach(),
                        parts=parts, logits1=logits1, logits2=logits2)
+
+
+# --- SCOPE training (D-052). Not a ProSeCo arm and not D3IM. ---
+
+SCOPE_RHO = 0.3
+SCOPE_SAMPLE_TEMPERATURE = 1.5
+SCOPE_MIX = 0.5
+
+
+def sample_beta22(generator: torch.Generator) -> float:
+    """Beta(2, 2) as a ratio of two Gamma(2, 1) draws. Four uniforms, this generator only."""
+    def gamma2() -> torch.Tensor:
+        u1 = torch.rand((), generator=generator, dtype=torch.float64).clamp_min(1e-300)
+        u2 = torch.rand((), generator=generator, dtype=torch.float64).clamp_min(1e-300)
+        return -torch.log(u1) - torch.log(u2)
+
+    g1, g2 = gamma2(), gamma2()
+    return float((g1 / (g1 + g2)).item())
+
+
+def clamp_scope_rate(raw: float, low: float = 0.1, high: float = 0.9) -> float:
+    return min(max(float(raw), low), high)
+
+
+def mix_is_mdm(generator: torch.Generator, probability: float = SCOPE_MIX) -> bool:
+    """One Bernoulli from ``generator``. Does not read Python's ``random``."""
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError("MDM mix probability must lie in [0, 1]")
+    u = float(torch.rand((), generator=generator, dtype=torch.float64).item())
+    return u < probability
+
+
+@dataclass
+class ScopeMask:
+    masked_positions: torch.Tensor
+    rates: list[float]
+    raw_rates: list[float]
+    n_masked: list[int]
+
+    @property
+    def total_masked(self) -> int:
+        return int(sum(self.n_masked))
+
+
+def sample_scope_masks(layout: SequenceLayout, generator: torch.Generator) -> ScopeMask:
+    """Per example: one Beta(2, 2) rate, clamped, then a Bernoulli on each response token."""
+    editable = layout.editable_mask.cpu()
+    masked = torch.zeros_like(editable)
+    rates, raws, counts = [], [], []
+    for b in range(editable.shape[0]):
+        pos = editable[b].nonzero().flatten()
+        raw = sample_beta22(generator)
+        rate = clamp_scope_rate(raw)
+        draw = torch.rand(int(pos.numel()), generator=generator, dtype=torch.float64)
+        chosen = pos[draw < rate]
+        masked[b, chosen] = True
+        raws.append(raw)
+        rates.append(rate)
+        counts.append(int(chosen.numel()))
+    return ScopeMask(masked_positions=masked, rates=rates, raw_rates=raws, n_masked=counts)
+
+
+def commit_top(confidence: torch.Tensor, masked: torch.Tensor, rho: float = SCOPE_RHO) -> torch.Tensor:
+    """Highest confidence first among masked positions. Ties: smallest position."""
+    if confidence.shape != masked.shape:
+        raise ValueError("confidence and mask must share a shape")
+    committed = torch.zeros_like(masked)
+    for b in range(masked.shape[0]):
+        idx = masked[b].nonzero().flatten()
+        n = int(idx.numel())
+        if n == 0:
+            continue
+        k = min(n, max(1, math.floor(rho * n)))
+        scores = confidence[b].detach()
+        order = sorted(range(n), key=lambda i: (-float(scores[int(idx[i])]), int(idx[i])))
+        take = [int(idx[i]) for i in order[:k]]
+        committed[b, take] = True
+    return committed
+
+
+def scope_loss_positions(masked: torch.Tensor, committed: torch.Tensor) -> torch.Tensor:
+    """Committed this step union still masked. Clean visible tokens are not in ``masked``."""
+    if bool((committed & ~masked).any()):
+        raise ValueError("a commit fell outside the masked positions")
+    return committed | (masked & ~committed)
+
+
+def scope_context_ids(gold_ids: torch.Tensor, masked: torch.Tensor, committed: torch.Tensor,
+                      samples: torch.Tensor, mask_token_id: int) -> torch.Tensor:
+    """Visible gold stays. Committed positions take ``samples``. The rest of the mask stays masked."""
+    out = gold_ids.clone()
+    out[masked & ~committed] = mask_token_id
+    out[committed] = samples[committed].to(dtype=out.dtype)
+    return out
+
+
+def sample_allowed_tokens(aligned_logits: torch.Tensor, positions: torch.Tensor, allowed: torch.Tensor,
+                          generator: torch.Generator, temperature: float = SCOPE_SAMPLE_TEMPERATURE
+                          ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Sample at ``positions`` and return temperature-1 probabilities of those ids.
+
+    The categorical uses ``temperature`` (1.5). The returned confidence does not:
+    it is the temperature-1 full-vocabulary probability of the sampled id (D-052).
+    """
+    if temperature <= 0:
+        raise ValueError("sample temperature must be positive")
+    rows = aligned_logits.detach().float()
+    scaled = rows / float(temperature)
+    allowed_dev = allowed.to(device=scaled.device)
+    scaled = scaled.masked_fill(~allowed_dev.view(1, 1, -1), float("-inf"))
+    probs = torch.softmax(scaled, dim=-1).cpu()
+    full = torch.softmax(rows, dim=-1).cpu()
+    ids = torch.zeros(rows.shape[:2], dtype=torch.long)
+    conf = torch.zeros(rows.shape[:2], dtype=torch.float32)
+    for b, pos in positions.detach().cpu().nonzero(as_tuple=False).tolist():
+        choice = int(torch.multinomial(probs[b, pos], 1, generator=generator).item())
+        ids[b, pos] = choice
+        conf[b, pos] = full[b, pos, choice]
+    return ids, conf
+
+
+@dataclass
+class ScopeStep:
+    loss: torch.Tensor
+    logits1: torch.Tensor
+    logits2: torch.Tensor
+    samples: torch.Tensor
+    confidence: torch.Tensor
+    committed: torch.Tensor
+    loss_positions: torch.Tensor
+    context_ids: torch.Tensor
+    parts: dict
+
+
+def scope_training_step(adapter: DiffusionAdapter, layout: SequenceLayout, masked_positions: torch.Tensor,
+                        allowed: torch.Tensor, sample_generator: torch.Generator, *,
+                        targets: torch.Tensor | None = None, temperature: float = SCOPE_SAMPLE_TEMPERATURE,
+                        rho: float = SCOPE_RHO) -> ScopeStep:
+    """``no_grad`` draft, then CE on committed ∪ still-masked. Clean context is excluded."""
+    if bool((masked_positions & ~layout.editable_mask).any()):
+        raise ValueError("SCOPE masks must be editable response positions")
+    if targets is None:
+        targets = layout.input_ids
+    mask_id = adapter.tokens.mask_token_id
+    z_ids = layout.input_ids.masked_fill(masked_positions, mask_id)
+    with torch.no_grad():
+        logits1 = adapter.aligned_logits(layout.with_input_ids(z_ids))
+        samples, confidence = sample_allowed_tokens(logits1, masked_positions, allowed, sample_generator,
+                                                    temperature)
+        committed = commit_top(confidence, masked_positions, rho)
+    loss_pos = scope_loss_positions(masked_positions, committed)
+    context = scope_context_ids(layout.input_ids, masked_positions, committed, samples, mask_id)
+    logits2 = adapter.aligned_logits(layout.with_input_ids(context))
+    if int(loss_pos.sum()) == 0:
+        loss = zero_with_graph(logits2)
+        n = 0
+    else:
+        ce = selected_token_ce(logits2, targets, loss_pos)
+        n = int(ce.numel())
+        loss = ce.sum() / n
+    visible = layout.editable_mask & ~masked_positions
+    parts = {
+        "arm": "scope",
+        "n_masked": int(masked_positions.sum()),
+        "n_committed": int(committed.sum()),
+        "n_loss_positions": n,
+        "n_clean_visible": int(visible.sum()),
+        "clean_excluded": True,
+        "draft_pass": "no_grad",
+        "confidence": "temperature_1_probability_of_sampled_token",
+    }
+    return ScopeStep(loss=loss, logits1=logits1, logits2=logits2, samples=samples.detach(),
+                     confidence=confidence.detach(), committed=committed, loss_positions=loss_pos,
+                     context_ids=context.detach(), parts=parts)
