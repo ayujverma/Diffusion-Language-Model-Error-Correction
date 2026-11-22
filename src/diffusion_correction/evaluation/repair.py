@@ -1,8 +1,10 @@
-"""Minimal repair-of-complete-draft evaluation (milestone 5; D-022).
+"""Repair of an already-complete saved draft.
 
-One forward on an already-complete saved draft. Every editable position is
-re-predicted greedily from the aligned logits (allowed vocabulary). Full
-correction samplers stay in milestone 6.
+``repair_drafts`` is the milestone-5 screen metric (D-022, D-044): one greedy
+forward, rewriting every editable token. ``repair_drafts_proseco`` is the
+milestone-6 path (D-049): the same greedy rule, repeated as fixed-point
+iterations up to a call budget. Each iteration is one NFE. The one-forward path
+is unchanged.
 
 Metrics use explicit denominators:
 - repaired = was wrong and became correct / n_wrong_before
@@ -18,6 +20,8 @@ import torch
 from ..models.adapter import DiffusionAdapter
 from ..models.alignment import build_layout
 from ..sampling.monotone import allowed_token_mask
+from ..sampling.nfe import ForwardMeter
+from ..sampling.proseco import DEFAULT_CORRECTOR_STEPS
 from ..training.bank_data import BankDraft
 
 
@@ -76,28 +80,91 @@ def repair_drafts(adapter: DiffusionAdapter, drafts: Sequence[BankDraft], *,
         logits = adapter.aligned_logits(lay_d)
         repaired_responses = _greedy_response(logits, lay_d.editable_mask, allowed)
         for d, pred, ref in zip(chunk, repaired_responses, refs):
-            if len(pred) != len(ref) or len(pred) != len(d.draft_ids):
-                raise ValueError(f"{d.problem_id}: length mismatch pred/ref/draft")
-            before_ok = [a == b for a, b in zip(d.draft_ids, ref)]
-            after_ok = [a == b for a, b in zip(pred, ref)]
-            n = len(ref)
-            n_wrong_before = sum(1 for x in before_ok if not x)
-            n_correct_before = n - n_wrong_before
-            n_repaired = sum(1 for b0, a0 in zip(before_ok, after_ok) if (not b0) and a0)
-            n_damaged = sum(1 for b0, a0 in zip(before_ok, after_ok) if b0 and (not a0))
-            n_wrong_after = sum(1 for x in after_ok if not x)
-            records.append({
-                "problem_id": d.problem_id, "split": d.split, "budget": d.budget,
-                "family": d.family, "length": d.length, "operand_digits": d.operand_digits,
-                "setting": d.setting, "response_length": n,
-                "n_wrong_before": n_wrong_before, "n_correct_before": n_correct_before,
-                "n_repaired": n_repaired, "n_damaged": n_damaged, "n_wrong_after": n_wrong_after,
-                "n_correct_after": n - n_wrong_after,
-                "draft_final_correct": d.final_correct, "draft_well_formed": d.well_formed,
-                "token_correct_before": before_ok, "token_correct_after": after_ok,
-                "repaired_ids": pred,
-            })
+            records.append(_repair_record(d, pred, ref))
     adapter.model.train(was)
+    return records
+
+
+def _write_responses(ids: torch.Tensor, editable: torch.Tensor, responses: list[list[int]]) -> None:
+    for b, pred in enumerate(responses):
+        pos = editable[b].nonzero(as_tuple=True)[0].tolist()
+        if len(pos) != len(pred):
+            raise AssertionError("editable count does not match the response")
+        for p, tok in zip(pos, pred, strict=True):
+            ids[b, p] = tok
+
+
+def _repair_record(draft: BankDraft, pred: list[int], ref: list[int], calls: int | None = None) -> dict:
+    if len(pred) != len(ref) or len(pred) != len(draft.draft_ids):
+        raise ValueError(f"{draft.problem_id}: length mismatch pred/ref/draft")
+    before_ok = [a == b for a, b in zip(draft.draft_ids, ref)]
+    after_ok = [a == b for a, b in zip(pred, ref)]
+    n = len(ref)
+    n_wrong_before = sum(1 for x in before_ok if not x)
+    n_correct_before = n - n_wrong_before
+    n_repaired = sum(1 for b0, a0 in zip(before_ok, after_ok) if (not b0) and a0)
+    n_damaged = sum(1 for b0, a0 in zip(before_ok, after_ok) if b0 and (not a0))
+    n_wrong_after = sum(1 for x in after_ok if not x)
+    rec = {
+        "problem_id": draft.problem_id, "split": draft.split, "budget": draft.budget,
+        "family": draft.family, "length": draft.length, "operand_digits": draft.operand_digits,
+        "setting": draft.setting, "response_length": n,
+        "n_wrong_before": n_wrong_before, "n_correct_before": n_correct_before,
+        "n_repaired": n_repaired, "n_damaged": n_damaged, "n_wrong_after": n_wrong_after,
+        "n_correct_after": n - n_wrong_after,
+        "draft_final_correct": draft.final_correct, "draft_well_formed": draft.well_formed,
+        "token_correct_before": before_ok, "token_correct_after": after_ok,
+        "repaired_ids": pred,
+    }
+    if calls is not None:
+        rec["calls"] = calls
+    return rec
+
+
+@torch.no_grad()
+def repair_drafts_proseco(adapter: DiffusionAdapter, drafts: Sequence[BankDraft], *,
+                          max_calls: int = DEFAULT_CORRECTOR_STEPS, batch_size: int = 32,
+                          allowed: torch.Tensor | None = None) -> list[dict]:
+    """Multi-step repair. One greedy rewrite of every editable token per call.
+
+    The first iteration uses ``_greedy_response``, the milestone-5 rule, so
+    ``max_calls=1`` matches ``repair_drafts`` token for token. Later iterations
+    re-forward the rewritten draft. The batch stops when every draft is unchanged,
+    and the unused calls are not backfilled. Every draft in a batch is charged
+    that batch's forward count (D-049).
+    """
+    if max_calls < 1:
+        raise ValueError("max_calls must be >= 1")
+    if not drafts:
+        return []
+    if allowed is None:
+        allowed = make_allowed_for_adapter(adapter)
+    device = next(adapter.model.parameters()).device
+    allowed = allowed.to(device)
+    was = adapter.model.training
+    adapter.model.eval()
+    records: list[dict] = []
+    try:
+        for start in range(0, len(drafts), batch_size):
+            chunk = list(drafts[start:start + batch_size])
+            current = [list(d.draft_ids) for d in chunk]
+            lay = build_layout([d.prompt_ids for d in chunk], current, adapter.tokens.pad_token_id).to(device)
+            ids = lay.input_ids.clone()
+            meter = ForwardMeter(adapter, max_calls=max_calls)
+            preds = current
+            for step in range(1, max_calls + 1):
+                logits = meter.forward(lay.with_input_ids(ids), kind="corrector", step=step)
+                if logits is None:
+                    break
+                preds = _greedy_response(logits, lay.editable_mask, allowed)
+                if preds == current:
+                    break
+                _write_responses(ids, lay.editable_mask, preds)
+                current = preds
+            for d, pred, ref in zip(chunk, preds, [d.reference_ids for d in chunk], strict=True):
+                records.append(_repair_record(d, pred, ref, calls=meter.nfe))
+    finally:
+        adapter.model.train(was)
     return records
 
 
@@ -113,7 +180,7 @@ def summarize_repair(records: Sequence[dict]) -> dict:
     drafts_fully_repaired = sum(1 for r in records
                                 if r["n_wrong_before"] > 0 and r["n_wrong_after"] == 0)
     drafts_damaged = sum(1 for r in records if r["n_damaged"] > 0)
-    return {
+    out = {
         "n_drafts": n,
         "n_tokens": tw + tc,
         "n_wrong_before": tw,
@@ -130,6 +197,11 @@ def summarize_repair(records: Sequence[dict]) -> dict:
         "fraction_error_drafts_fully_repaired": (
             drafts_fully_repaired / drafts_with_errors) if drafts_with_errors else None,
     }
+    if records and "calls" in records[0]:
+        total_calls = sum(int(r["calls"]) for r in records)
+        out["model_calls_total"] = total_calls
+        out["model_calls_per_draft"] = (total_calls / n) if n else None
+    return out
 
 
 def make_allowed_for_adapter(adapter: DiffusionAdapter, tokenizer_size: int | None = None,
