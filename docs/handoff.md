@@ -10,7 +10,8 @@ is DONE (job 3597054, D-043). Milestone 5 shared-bank screen is
 `@1000`. High gen-time confidence weighting did **not** beat uniform; `low_conf` ≈
 `uniform` best on net wrong tokens. **No test split has been evaluated.** ProSeCo /
 SCOPE / `proseco_gen_conf` are **not** trained (milestone 7). Next coding milestone
-is **7** (prior-method training adapters). The M5 greedy repair is a screen metric
+is **7** (prior-method training adapters). Prompt for a fresh M7 agent:
+`docs/m7_agent_prompt.md`. The M5 greedy repair is a screen metric
 only; call-budget comparisons use the milestone-6 harness. Detailed records:
 `docs/decisions.md` (through D-050),
 `docs/verification.md`, `docs/source_audit.md`, `docs/implementation_plan.md`,
@@ -134,8 +135,9 @@ command.
 sampler, D3IM, an extra-unmask control that is not ReMDM, NFE accounting, and
 `dlmc evaluate-calls` / `evaluate-repair --method proseco`. Provisional ω = 2 and
 S = 4. Tested locally on the tiny backbone. Not run on TACC. Stub, not submitted:
-`scripts/tacc/call_budget_eval.slurm`. The M6 code is still uncommitted on the Mac
-until a commit is made; `stage_update.sh` will refuse the dirty tree.
+`scripts/tacc/call_budget_eval.slurm`. Committed locally as `fb00b61`..`4affc74`
+(author Ayuj Verma, no co-author trailer). Confirm whether that range is on TACC
+before a later update; `stage_update.sh` refuses a dirty tree and a wrong base.
 
 **Already done (do not redo):**
 - Warmup continuation + generator selection (D-037/D-038): ckpt-0008000.
