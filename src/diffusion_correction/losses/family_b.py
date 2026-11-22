@@ -22,6 +22,10 @@ from ..sampling.candidates import greedy_allowed
 from .correction import token_error_masks
 from .masked import masked_diffusion_loss
 from .token_ce import zero_with_graph
+from .weighting import DEFAULT_STAGE_EDGES, compute_error_weights, stage_bin
+
+PROSECO_ARMS = ("proseco_basic", "proseco_error_prioritized", "proseco_gen_conf")
+
 
 def time_weight(t: float) -> float:
     """``a(t) = 1/t`` for a mask rate in ``(0, 1]`` (D-051)."""
@@ -109,6 +113,8 @@ class CorrectorTerms:
     n_keep: int
     error_empty: bool
     keep_empty: bool
+    error_weights: torch.Tensor | None = None
+    weight_diagnostics: dict | None = None
 
 
 def _partition(draft_ids: torch.Tensor, targets: torch.Tensor, editable: torch.Tensor
@@ -162,6 +168,62 @@ def proseco_error_prioritized_loss(aligned_logits: torch.Tensor, targets: torch.
                           error_empty=n_err == 0, keep_empty=n_keep == 0)
 
 
+def error_confidence_groups(log_c: torch.Tensor, error_mask: torch.Tensor,
+                            t_per_example: Sequence[float],
+                            stage_edges: Sequence[float] = DEFAULT_STAGE_EDGES
+                            ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Stop-grad ``log c`` of the committed token, and the mask-rate bin of its example.
+
+    Online steps have no bank budget. The group is that bin inside the minibatch (D-051).
+    """
+    scores, rates = [], []
+    for b in range(error_mask.shape[0]):
+        idx = error_mask[b].nonzero(as_tuple=False).flatten()
+        n = int(idx.numel())
+        if n == 0:
+            continue
+        scores.append(log_c[b, idx].detach().reshape(n).double().cpu())
+        rates.append(torch.full((n,), float(t_per_example[b]), dtype=torch.float64))
+    if not scores:
+        return torch.zeros(0, dtype=torch.float64), torch.zeros(0, dtype=torch.long)
+    return torch.cat(scores), stage_bin(torch.cat(rates), tuple(float(x) for x in stage_edges))
+
+
+def proseco_gen_conf_loss(aligned_logits: torch.Tensor, targets: torch.Tensor, draft_ids: torch.Tensor,
+                          editable: torch.Tensor, t_per_example: Sequence[float], mask_token_id: int,
+                          log_c: torch.Tensor, *, beta: float = 0.5,
+                          stage_edges: Sequence[float] = DEFAULT_STAGE_EDGES) -> CorrectorTerms:
+    """D-046: CE on errors and keeps, errors rank-weighted by stop-grad ``log c``.
+
+    ``log_c`` is ``[B, L]`` from the draft-construction forward. It is not ``q`` and
+    not a probability from ``aligned_logits`` (the corrector forward).
+    """
+    err, keep, n_err, n_keep = _partition(draft_ids, targets, editable)
+    diag: dict = {"n_errors": n_err, "error_set_empty": n_err == 0, "beta": beta,
+                  "groups": "mask_rate_bin"}
+    weights = torch.zeros(0, dtype=torch.float32)
+    if n_err == 0:
+        l_error = zero_with_graph(aligned_logits)
+    else:
+        ce = -gathered_corrector_logp(aligned_logits, targets, err, mask_token_id)
+        scores, groups = error_confidence_groups(log_c, err, t_per_example, stage_edges)
+        ranked = compute_error_weights("high_conf", groups, beta, log_c=scores)
+        if ranked.weights.requires_grad:
+            raise RuntimeError("rank weights received a gradient")
+        weights = ranked.weights.detach()
+        w = weights.to(device=ce.device, dtype=ce.dtype)
+        l_error = (example_scales(err, t_per_example, ce) * w * ce).sum() / n_err
+        diag.update(ranked.diagnostics)
+    if n_keep == 0:
+        l_keep = zero_with_graph(aligned_logits)
+    else:
+        ce_k = -gathered_corrector_logp(aligned_logits, targets, keep, mask_token_id)
+        l_keep = (example_scales(keep, t_per_example, ce_k) * ce_k).sum() / n_keep
+    return CorrectorTerms(loss=l_error + l_keep, n_error=n_err, n_keep=n_keep,
+                          error_empty=n_err == 0, keep_empty=n_keep == 0,
+                          error_weights=weights, weight_diagnostics=diag)
+
+
 @dataclass
 class ProsecoStep:
     loss: torch.Tensor
@@ -179,14 +241,15 @@ class ProsecoStep:
 def proseco_training_step(adapter: DiffusionAdapter, layout: SequenceLayout,
                           masked_positions: torch.Tensor, t_per_example: Sequence[float],
                           allowed: torch.Tensor, *, targets: torch.Tensor | None = None,
-                          arm: str = "proseco_basic") -> ProsecoStep:
+                          arm: str = "proseco_basic", beta: float = 0.5,
+                          stage_edges: Sequence[float] = DEFAULT_STAGE_EDGES) -> ProsecoStep:
     """Two forwards. ``layout.input_ids`` is the context (gold, before masking).
 
     ``targets`` defaults to that context. A different target tensor changes the loss
     and does not change ``z_t`` or the draft.
     """
-    if arm not in ("proseco_basic", "proseco_error_prioritized"):
-        raise ValueError(f"arm {arm!r} is not implemented on this step yet")
+    if arm not in PROSECO_ARMS:
+        raise ValueError(f"arm {arm!r} is not a ProSeCo training arm")
     if masked_positions.shape != layout.input_ids.shape:
         raise ValueError("mask shape must match the layout")
     if bool((masked_positions & ~layout.editable_mask).any()):
@@ -203,9 +266,12 @@ def proseco_training_step(adapter: DiffusionAdapter, layout: SequenceLayout,
     logits2 = adapter.aligned_logits(layout.with_input_ids(draft))
     if arm == "proseco_basic":
         terms = proseco_basic_loss(logits2, targets, draft, layout.editable_mask, t_per_example, mask_id)
-    else:
+    elif arm == "proseco_error_prioritized":
         terms = proseco_error_prioritized_loss(logits2, targets, draft, layout.editable_mask,
                                               t_per_example, mask_id)
+    else:
+        terms = proseco_gen_conf_loss(logits2, targets, draft, layout.editable_mask, t_per_example,
+                                      mask_id, log_c_map, beta=beta, stage_edges=stage_edges)
     loss = l_mask_out.loss + terms.loss
     parts = {
         "arm": arm,
@@ -218,6 +284,7 @@ def proseco_training_step(adapter: DiffusionAdapter, layout: SequenceLayout,
         "keep_set_empty": terms.keep_empty,
         "a_t": [time_weight(t) for t in t_per_example],
         "time_weight": "1/t",
+        "weight_diagnostics": terms.weight_diagnostics,
     }
     return ProsecoStep(loss=loss, l_mask=l_mask_out.loss, l_corr=terms.loss, draft_ids=draft.detach(),
                        z_ids=z_ids.detach(), first_tokens=cand.detach(), log_c=log_c_map.detach(),
