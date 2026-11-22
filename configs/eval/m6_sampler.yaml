@@ -1,0 +1,23 @@
+# Milestone 6 sampler defaults (D-049). Provisional: not a selected primary budget.
+# Family A is not trained here. proseco_gen_conf training is milestone 7.
+# method "proseco" is the shared inference sampler, not a Family A arm and not
+# proseco_gen_conf.
+
+omega: 2
+corrector_steps: 4
+methods: [monotone, proseco, d3im, extra_unmask]
+# Independent horizons. A prefix of a longer run is not the shorter budget.
+budgets: [1, 2, 4, 8]
+block_length: null
+split: val
+family_a_checkpoint: ckpt-0001000
+family_a_runs:
+  - m5-uniform-v1
+  - m5-high_conf-v1
+  - m5-gen_difficulty-v1
+  - m5-current_loss-v1
+  - m5-low_conf-v1
+  - m5-shuffled_conf-v1
+controls:
+  remdm: not_implemented  # Q-6 remains open
+  cdlm_threshold: not_implemented  # optional in the build prompt; not part of M6
