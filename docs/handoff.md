@@ -1,19 +1,21 @@
 # Handoff for a fresh session
 
-As of 2026-11-20. **Milestones 1–5 are complete in substance. Milestone 6 software
+As of 2026-11-22. **Milestones 1–5 are complete in substance. Milestone 6 software
 is TESTED LOCALLY (D-049): samplers and the call-budget harness, no TACC eval and
-no selected primary budget.** Warmup continuation
+no selected primary budget. Milestone 7 software is IMPLEMENTED / TESTED LOCALLY
+(D-051, D-052): the four Family B trainers, configs, and Slurm scripts. No Family B
+job has been submitted and no call-budget score exists. Not EXPERIMENT COMPLETED.**
+Warmup continuation
 on Lonestar6 selected checkpoint 8000 (D-037/D-038). Milestone 4 bank `m4-ckpt8000-v1`
 is DONE (job 3597054, D-043). Milestone 5 shared-bank screen is
 **EXPERIMENT COMPLETED** (D-047): six weighting arms trained to 1000 updates
 (jobs 3600435 / 3600756) and dedicated repair eval (job 3600803) matches screen
 `@1000`. High gen-time confidence weighting did **not** beat uniform; `low_conf` ≈
-`uniform` best on net wrong tokens. **No test split has been evaluated.** ProSeCo /
-SCOPE / `proseco_gen_conf` are **not** trained (milestone 7). Next coding milestone
-is **7** (prior-method training adapters). Prompt for a fresh M7 agent:
-`docs/m7_agent_prompt.md`. The M5 greedy repair is a screen metric
-only; call-budget comparisons use the milestone-6 harness. Detailed records:
-`docs/decisions.md` (through D-050),
+`uniform` best on net wrong tokens. **No test split has been evaluated.** Family B
+has not been trained on TACC. Next is **milestone 8** (cost estimate and the
+multi-seed grid), after the user runs the Family B screen. The M5 greedy repair is a
+screen metric only; call-budget comparisons use the milestone-6 harness. Detailed records:
+`docs/decisions.md` (through D-052),
 `docs/verification.md`, `docs/source_audit.md`, `docs/implementation_plan.md`,
 `docs/milestone4_bank.md`, `docs/data_format.md`; if they disagree with this file,
 they win.
@@ -101,8 +103,8 @@ fixed model-call budget (milestone 6 accounting). Extensions stay optional.
 | 4: immutable draft bank | **DONE** (D-043): bank `m4-ckpt8000-v1`, job 3597054 |
 | 5: shared-bank correction screen | **EXPERIMENT COMPLETED** (D-044/D-045/D-047): six arms @ 1000 updates + repair job 3600803 |
 | 6: correction samplers + call-budget eval harness | **SOFTWARE DONE** (D-049): TESTED LOCALLY. Not run on TACC. No primary budget selected |
-| 7: prior-method adapters (ProSeCo ×3 incl. `proseco_gen_conf` D-046, SCOPE) | **NEXT** — not started |
-| 8: cost estimate, main grid, analysis | not started |
+| 7: prior-method adapters (ProSeCo ×3 incl. `proseco_gen_conf` D-046, SCOPE) | **IMPLEMENTED / TESTED LOCALLY** (D-051, D-052). Not run on TACC. Not EXPERIMENT COMPLETED |
+| 8: cost estimate, main grid, analysis | **NEXT** — not started. Wait until the user says Family B has run |
 
 **Milestone-3 completed items:**
 - Mask policy (D-028), sampler policy (D-029), precision and trainable parameters
@@ -124,12 +126,18 @@ fixed model-call budget (milestone 6 accounting). Extensions stay optional.
 
 ## 4. Next steps
 
-**First: Milestone 7**, starting with written answers to Q-4 and Q-5 (D-050). Then
-train `proseco_basic`, `proseco_error_prioritized`, `proseco_gen_conf` (D-046), and
-SCOPE+D3IM on Open-dCoder. Score them with `dlmc evaluate-calls`. Family A is not
-ProSeCo. The M5 one-forward repair is a screen metric only. Milestone 6 does not
-prove the ports match LLaDA or the SCOPE paper. The user submits every TACC
-command.
+**Milestone 7 software is in the tree and has not been run.** D-051 and D-052 close
+Q-4 and Q-5. `dlmc train-family-b` trains `proseco_basic`,
+`proseco_error_prioritized`, `proseco_gen_conf` (D-046), and SCOPE from checkpoint
+8000. Score them with `dlmc evaluate-calls` via `scripts/tacc/family_b_eval.slurm`
+(val only). Family A is not ProSeCo and was not retrained. The M5 one-forward repair
+is a screen metric only. Milestone 6 and milestone 7 do not prove the ports match
+LLaDA or the SCOPE paper. The user submits every TACC command. Family B training
+has not been run on TACC until the user says so.
+
+**Next: Milestone 8**, the cost estimate and the three-seed grid (Family A and
+Family B, including `proseco_gen_conf`). Do not launch that grid in place of the
+unrun Family B screen. Q-6 (ReMDM) stays open.
 
 **Milestone 6 (software, D-049, clarified by D-050).** ProSeCo-style correction
 sampler, D3IM, an extra-unmask control that is not ReMDM, NFE accounting, and
@@ -145,9 +153,12 @@ before a later update; `stage_update.sh` refuses a dirty tree and a wrong base.
 - Family A M5 screen + repair (D-044/D-045/D-047). Local copies under
   `runs/tacc_results/correction/` (gitignored).
 - D-048: array-job `squeue` EndTime multiline fix in TACC slurm scripts.
+- Family B software (D-051, D-052): `dlmc train-family-b`, four configs, and
+  `scripts/tacc/family_b_screen.slurm` / `family_b_eval.slurm`. Written, not submitted.
 
-**Then, after milestone 7:** the multi-seed grid and paper analysis (milestone 8),
-using the milestone-6 call accounting. Keep all six Family A arms.
+**Then, milestone 8:** the cost estimate and the multi-seed grid, using the
+milestone-6 call accounting. Keep all six Family A arms. Family B training has not
+been run on TACC until the user says so.
 
 **Historical note (superseded for “what to do next”):** older handoff text described
 collecting drafts with the D-029 sampler observer hook
@@ -201,7 +212,7 @@ calibration table (`verification.md`) is the input to that choice.
 | `scripts/tacc/` | Lonestar6 runbook scripts (`docs/warmup_continuation.md`): `tacc_env.sh` (shared settings and checks), `stage_transfer.sh` (Mac), `install_transfer.sh`, `setup_env.sh`, `backup_to_ranch.sh`, `env_check.slurm`, `pilot.slurm`, `continuation.slurm`, `final_eval.slurm`; Python helpers `preflight_checkpoint.py`, `cuda_fixture.py`, `check_expected_batches.py`, `compare_preflight.py`, `continuation_status.py`, `pilot_report.py`, `compare_calibrations.py`, `make_monitor_subset.py`; pilot-3592809 diagnostic (not a gate) `fixture_update_diagnostic.py`, `summarize_pilot_memory.py`, `fixture_diagnostic.slurm`; Linux lock `requirements-tacc-lock.txt` (`compile_lock.sh`) |
 | `paper/methods.md` | Methods draft from verified code |
 
-Tests (300 passed in the milestone-6 software check, `.venv/bin/python -m pytest -q`):
+Tests (329 passed in the milestone-7 software check, `.venv/bin/python -m pytest -q`):
 
 | File | Tests | Notes |
 | --- | --- | --- |
@@ -215,6 +226,7 @@ Tests (300 passed in the milestone-6 software check, `.venv/bin/python -m pytest
 | `test_data_splits.py` | 20 | includes 9 tamper tests with re-hashed manifests |
 | `test_masking.py`, `test_sampler.py`, `test_trainer.py`, `test_sampler_real.py` | milestone 3 | `test_sampler_real.py` is `real_backbone` |
 | `test_m6_sampler.py` | 15 | D-049 NFE, ProSeCo-style sampler, D3IM, extra-unmask, repair |
+| `test_family_b_basic.py`, `test_family_b_eq11.py`, `test_family_b_gen_conf.py`, `test_family_b_scope.py`, `test_family_b_trainer.py` | milestone 7 | D-051/D-052 stop-grad, Eq. 11, gen_conf, SCOPE, resume |
 | `test_continuation.py`, `test_tacc_scripts.py` | 9 | D-033 trainer rules; resume guard and pilot report |
 
 68 tests carry the `tokenizer` marker.
@@ -228,7 +240,7 @@ hides MPS and blocks the Hub, so use full permissions for those commands.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # pinned: requirements-lock.txt; no transformers (D-008)
 .venv/bin/dlmc download-backbone                              # -> runs/hf/open-dcoder-0.5B, sha256-verified
-.venv/bin/python -m pytest -q                                 # milestone-6 check: 300 passed
+.venv/bin/python -m pytest -q                                 # milestone-7 check: 329 passed
 .venv/bin/python -m pytest -q -m "not real_backbone and not tokenizer"   # 149, no assets needed
 .venv/bin/dlmc doctor --backbone open-dcoder --device mps     # ~10 GB of memory
 .venv/bin/dlmc generate-data --config configs/data/pilot.yaml  # -> runs/data/pilot-seed20261116 (verifies itself)
@@ -282,9 +294,10 @@ T = L is the slowest evaluation: about 1.5 s per call for a batch of 50 with L =
 
 Details and tables are in `docs/verification.md`.
 
-**Tests.** Milestone-6 software check: `.venv/bin/python -m pytest -q` reported
-300 passed. An earlier milestone-3 count was 225 outside the sandbox and 224 inside
-it when MPS was hidden. The milestone-3 mutation check catches 12/12 mutants and
+**Tests.** Milestone-7 software check: `.venv/bin/python -m pytest -q` reported
+329 passed. The milestone-6 check was 300 passed. An earlier milestone-3 count was
+225 outside the sandbox and 224 inside it when MPS was hidden. The milestone-3
+mutation check catches 12/12 mutants and
 the D-033 check 7/7.
 
 **Continuation preparation (details in `verification.md`, "Warmup-continuation
@@ -444,16 +457,16 @@ as evidence.
 - D-011: β = 0.5 and the bin edges.
 - D-012: λ and μ.
 - Q-1: which liger version trained the base checkpoint.
-- Q-4: the ProSeCo corrector input.
-- Q-5: the SCOPE commit confidence.
-- Q-6: the ReMDM adaptation.
+- Q-4: closed for training by D-051 (allowed-set argmax at every editable position; `a(t) = 1/t`).
+- Q-5: closed for training by D-052 (temperature-1 probability of the sampled token; D3IM's argmax probability is unchanged).
+- Q-6: the ReMDM adaptation. Still open. Do not implement it in the Family B trainer.
 - Q-7: whether near-zero L_keep is typical (measure in the milestone-4 diagnostic).
 (Resolved in milestone 3: Q-8 by D-028; Q-3 for MPS by D-030; sampler schedule and ties
 by D-029.)
 
 **Checks not run:**
 - Gate D (observer log c / log q same-pass, reference-independence of the bank).
-- ProSeCo/SCOPE stop-gradient fixtures.
+- ProSeCo/SCOPE stop-gradient fixtures on the real backbone. The tiny-backbone fixtures passed (verification.md, milestone 7).
 - Any CUDA/A100 run, including the Colab launcher and every TACC step of the D-033
   runbook (transfer, backup, environment check, pilot, continuation, final evaluation).
 - Any test-split evaluation, draft collection or experimental arm.
@@ -479,3 +492,8 @@ by D-029.)
   configs, `scripts/tacc/`, tests and documentation. The transfer bundle is built
   from that commit.
 - Run `git log --oneline 8e00216..HEAD` for the current hashes.
+- Milestone 7 code is local commits `1926214` through `353adae`, on top of the
+  brief `369896a`, plus the documentation commit that contains this sentence
+  (author Ayuj Verma, no co-author trailer). Not pushed. Confirm TACC's HEAD before
+  `scripts/tacc/stage_update.sh`; that script refuses a dirty tree and a wrong base.
+  Local M6 commits, if TACC does not have them yet, are `fb00b61` through `4affc74`.

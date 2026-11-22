@@ -257,3 +257,30 @@ What the AI did:
 Human checks:
 - None. The user asked why LLaDA was not used and whether milestone 6 is ready
   for milestone 7. That question is not a review of the sampler code.
+
+## 2026-11-22: Milestone 7 Family B adapters (Cursor agent, Grok 4.7)
+
+What the AI did:
+- Read the handoff, the milestone-7 plan, D-002 through D-050, source-audit §3.1–3.2
+  and Q-4/Q-5/Q-6, the milestone-5 and milestone-6 verification sections, the build
+  prompt's loss and prior-method sections, and the pinned ProSeCo corrector in
+  `diffusion.py` at `43ce881`. The suite at the start of the session was 300 passed.
+- Wrote D-051 (Q-4, `a(t) = 1/t`, mask-rate groups) before the ProSeCo trainer, and
+  D-052 (Q-5, sampled-token confidence versus D3IM's argmax confidence) before the
+  SCOPE trainer. Did not edit older decision text.
+- Implemented `proseco_basic`, `proseco_error_prioritized`, `proseco_gen_conf`, and
+  the SCOPE step on the existing Open-dCoder adapter. Added `dlmc train-family-b`,
+  four configs, and two Slurm scripts. Did not submit them and did not push.
+- Ran `.venv/bin/python -m pytest -q`: 329 passed. No TACC job and no Family B
+  training result. Label: IMPLEMENTED / TESTED LOCALLY.
+
+Reused or derived code:
+- The corrector terms follow the structure of ProSeCo `diffusion.py` at `43ce881`
+  (detached argmax draft, second forward, `1/t` weight, Eq. 11's `−p` on keeps).
+  They are a new implementation against `aligned_logits`, not a copy of that file.
+  D-051 records the Open-dCoder differences, including argmax at every editable
+  position. No SCOPE repository was used; D-052 is the training rule taken from
+  the audited appendix text.
+
+Human checks:
+- None. The author has not reviewed the Family B trainer or D-051/D-052.

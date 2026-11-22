@@ -1023,6 +1023,38 @@ These tests check the D-049 token-state rules on the tiny backbone. They do not
 show that an Open-dCoder generation matches LLaDA, and they do not show that SCOPE
 training matches the paper. D-050. No Open-dCoder call-budget run exists.
 
+## Milestone 7 Family B adapters (2026-11-22) — IMPLEMENTED / TESTED LOCALLY
+
+**Software only. Not EXPERIMENT COMPLETED.** No Slurm job was submitted. No
+Open-dCoder Family B training run exists. No call-budget number was produced.
+Family A was not retrained. Q-6 is still open.
+
+`.venv/bin/python -m pytest -q` reported **329 passed** after this milestone's
+tests. The new files are `tests/test_family_b_basic.py`, `test_family_b_eq11.py`,
+`test_family_b_gen_conf.py`, `test_family_b_scope.py`, and `test_family_b_trainer.py`,
+all on the tiny backbone.
+
+| Check | Where | Label |
+| --- | --- | --- |
+| `a(t) = 1/t` on the corrector only; `L_mask` stays unweighted pooled CE | `test_time_weight_is_inverse_mask_rate`, `test_corrector_term_does_not_gradient_the_first_forward_or_scale_l_mask` | TESTED LOCALLY |
+| Permuting gold under the mask changes the loss and not `ŷ` | `test_permuting_gold_under_the_mask_changes_the_loss_and_not_the_draft` | TESTED LOCALLY |
+| Corrector backward does not fill the first-forward logits | same test, `retain_grad` | TESTED LOCALLY |
+| Eq. 11 keep gradient is `p_t (p − onehot)`, not the CE gradient; the error term is CE | `test_keep_term_matches_negative_probability_and_not_ce`, `test_error_term_matches_ce_and_not_probability` | TESTED LOCALLY |
+| `proseco_gen_conf` weights ignore the gold id and the second forward, and have no gradient | `test_weights_ignore_the_gold_token_and_the_second_forward` | TESTED LOCALLY |
+| Raising one error's `log c` raises that row's weight and scales its logit gradient | `test_raising_one_log_c_raises_that_rows_weight_and_scales_its_gradient` | TESTED LOCALLY |
+| Groups are mask-rate bins inside the minibatch | `test_groups_are_mask_rate_bins_inside_the_minibatch` | TESTED LOCALLY |
+| SCOPE loss positions are the masked set; clean visible tokens are excluded; the draft pass is `no_grad` | `test_scope_step_drops_clean_tokens_and_keeps_the_draft_pass_out_of_the_graph` | TESTED LOCALLY |
+| SCOPE confidence is the temperature-1 probability of the sampled id, not the temperature-1.5 probability | `test_confidence_is_the_temperature_1_probability_of_the_sampled_token` | TESTED LOCALLY |
+| MDM mix is a generator Bernoulli, not `random` | `test_beta_and_mix_use_their_generator_and_not_python_random` | TESTED LOCALLY |
+| A zero-mask minibatch does not step the optimizer | `test_zero_mask_skips_the_optimizer` | TESTED LOCALLY |
+| Resume refuses a different arm; the checkpoint loads through `load_trained_adapter` | `test_resume_refuses_a_different_arm_and_reloads_for_evaluate_calls` | TESTED LOCALLY |
+| The four configs share batch 16, seed 20261120, and checkpoint 8000; test splits are refused | `test_screen_configs_share_batch_seed_init_and_refuse_test_splits` | TESTED LOCALLY |
+
+Scripts written and not submitted: `scripts/tacc/family_b_screen.slurm` (array of the
+four arms, `DLMC_MAX_UPDATES` for a smoke, D-048 EndTime line) and
+`scripts/tacc/family_b_eval.slurm` (val only; methods monotone, proseco, d3im;
+budgets 1,2,4,8 are not a selected primary budget; ω = 2 and S = 4).
+
 ## Milestone 4 bank (pointer)
 
 Bank `m4-ckpt8000-v1` job 3597054: **EXPERIMENT COMPLETED** (D-043). Schema and

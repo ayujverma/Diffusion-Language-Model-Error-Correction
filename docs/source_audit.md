@@ -175,12 +175,13 @@ Published (paper Algorithm 1 and code `diffusion.py`):
   fixed-point iterations of argmax over the active region. Each iteration counts as
   one NFE.
 
-Our adaptation (training still not implemented; inference sampler is D-049):
-Open-dCoder backbone, our tasks, our prompt/response layout and shift; Open-dCoder's
-U(0,1)-clamped mask ratio unless the adapter milestone decides otherwise. Online
-draft construction makes the training objective a **family-B** comparison, not the
-shared-draft control. The milestone-6 sampler (`sampling/proseco.py`) is the shared
-inference decoder only. It is not Family A and not `proseco_gen_conf`.
+Our adaptation (training IMPLEMENTED / TESTED LOCALLY, D-051; not run on TACC; not a
+paper reproduction): Open-dCoder backbone, our tasks, our prompt/response layout and
+shift. `L_mask` stays the D-028 clamped-uniform mask with no `1/t`. The corrector
+uses `a(t) = 1/t`. The training draft is an allowed-set argmax at every editable
+position. Online drafts make this a **family-B** comparison, not the shared-draft
+control. The milestone-6 sampler (`sampling/proseco.py`) is the shared inference
+decoder only. It is not Family A and not `proseco_gen_conf`.
 
 ProSeCo's released sampler is LLaDA, not Open-dCoder. `llada/generate.py` at the
 pinned commit loads `GSAI-ML/LLaDA-8B-Instruct`. LLaDA uses the SUBS copy-over

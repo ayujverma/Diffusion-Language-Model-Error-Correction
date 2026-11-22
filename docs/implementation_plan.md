@@ -150,22 +150,31 @@ from a chosen `m5-*-v1` run). Their training recipe stays the shared-bank object
 No primary call budget has been selected. D-050: this milestone is the software gate
 for milestone 7. It is not a numerical match to LLaDA or to SCOPE.
 
-## Milestone 7: prior-method adapters (Family B)
+## Milestone 7: prior-method adapters (Family B) — IMPLEMENTED / TESTED LOCALLY (2026-11-22)
 
-Train/adapt prior methods on Open-dCoder (not on LLaDA) and our tasks. First record
-Q-4 and Q-5, then fixtures for supervised positions and stop-gradient paths. D-050.
+**Software only. Not EXPERIMENT COMPLETED.** No Family B training job has been
+submitted, and no call-budget score exists. D-051 closes Q-4. D-052 closes Q-5.
+Q-6 (ReMDM) stays open. These arms are Open-dCoder adaptations, not paper
+reproductions (D-050).
 
-1. `proseco_basic` — ProSeCo Algorithm 1 corrector (all-position CE), adapted.
-2. `proseco_error_prioritized` — appendix Eq. 11 variant; **distinct name**.
-3. **`proseco_gen_conf` (D-046)** — same online draft construction as ProSeCo, but
-   the corrector CE on error positions is rank-weighted by stop-grad generation
-   confidence \(\log\hat{c}\) of the committed draft token from the
-   draft-construction forward (train-time option 1). Not a Family A arm; not an
-   exact reproduction of Eq. 11.
-4. SCOPE + D3IM, adapted.
+- [x] `proseco_basic` — online draft, all-position CE, `a(t) = 1/t` on the corrector only
+- [x] `proseco_error_prioritized` — Eq. 11, distinct name; keep term is `−p`, not CE
+- [x] `proseco_gen_conf` (D-046) — same draft as basic; error CE rank-weighted by
+      stop-grad `log c` from the draft forward. Groups are the mask-rate bin in the
+      minibatch (D-051), not the bank's (budget, stage) pair
+- [x] SCOPE training step (D-052), evaluated later with the existing D3IM sampler.
+      No confidence-weighted SCOPE arm
+- [x] `dlmc train-family-b`, configs `configs/correction/m7_*.yaml`, init checkpoint
+      8000, shared batch 16, seed 20261120, 1000 updates. Test splits refused
+- [x] Checkpoints use the atomic format `dlmc evaluate-calls` already loads.
+      Family A is unchanged and still loadable
+- [x] Slurm, not submitted: `scripts/tacc/family_b_screen.slurm`,
+      `scripts/tacc/family_b_eval.slurm`. Val only. Budgets `1,2,4,8` are not a
+      selected primary budget. ω = 2 and S = 4 stay the D-049 defaults
 
-Evaluate all of the above (and Family A's six arms) with the milestone-6 sampler /
-call-budget protocol.
+The user submits the jobs. Milestone 8 is next: a cost estimate, then the
+three-seed grid. Do not start that grid until the user says the Family B screen
+has actually run.
 
 ## Milestone 8 onward: cost estimate, main grid, analysis, paper
 
@@ -179,10 +188,11 @@ bootstrap-by-problem statistics, and a report generated from raw records.
 1. Read this file, then `docs/decisions.md`, `docs/verification.md`, and
    `docs/source_audit.md` §5 (open questions).
 2. Recreate the environments and assets with the README "Setup" commands, then run
-`.venv/bin/python -m pytest -q`. As of the milestone-6 software check, 300 passed.
+`.venv/bin/python -m pytest -q`. The milestone-7 software check reported 329 passed
+(the milestone-6 check was 300).
 The `real_backbone` tests need the weights and the `tokenizer` tests need the
 tokenizer files.
-3. Start milestone 7 by writing Q-4 and Q-5, then the Family B trainers on
-   Open-dCoder (`proseco_basic`, then `proseco_error_prioritized`, then
-   `proseco_gen_conf` per D-046, and SCOPE). The milestone-6 harness is ready
-   (D-050). It does not certify that those methods match the papers.
+3. Milestone 7 software is TESTED LOCALLY (D-051, D-052; suite 329 passed). It has
+   not been run on TACC. Next is milestone 8: cost estimate and the multi-seed grid,
+   after the user submits `scripts/tacc/family_b_screen.slurm` and the artifacts
+   are checked. The milestone-6 harness does not certify that the arms match the papers.
