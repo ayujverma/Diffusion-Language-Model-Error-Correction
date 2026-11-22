@@ -25,6 +25,7 @@ import torch
 
 from ..models.adapter import DiffusionAdapter
 from ..models.alignment import build_layout
+from .nfe import ForwardMeter
 
 
 def reveal_schedule(length: int, calls: int) -> list[int]:
@@ -77,8 +78,13 @@ Observer = Callable[[int, torch.Tensor, torch.Tensor, list[CommitEvent]], None]
 @torch.no_grad()
 def monotone_unmask(adapter: DiffusionAdapter, prompts: Sequence[Sequence[int]], response_lengths: Sequence[int],
                     calls: int, allowed: torch.Tensor, observer: Observer | None = None,
-                    record_traces: bool = False) -> SampleResult:
-    """Generate one batch. Every example shares the same number of calls T."""
+                    record_traces: bool = False, meter: ForwardMeter | None = None) -> SampleResult:
+    """Generate one batch. Every example shares the same number of calls T.
+
+    ``meter``, when passed, records each forward as kind ``predictor`` (D-049). The
+    schedule is still exactly ``calls`` forwards: a meter that refuses one is an
+    error, not an early stop. Omitting ``meter`` leaves the D-029 path unchanged.
+    """
     B = len(prompts)
     if len(response_lengths) != B:
         raise ValueError("one response length per prompt")
@@ -103,7 +109,15 @@ def monotone_unmask(adapter: DiffusionAdapter, prompts: Sequence[Sequence[int]],
     try:
         for s in range(1, calls + 1):
             masked = layout.editable_mask & (ids == mask_id)
-            logits = adapter.aligned_logits(layout.with_input_ids(ids))
+            view = layout.with_input_ids(ids)
+            if meter is None:
+                logits = adapter.aligned_logits(view)
+            else:
+                logits = meter.forward(view, kind="predictor", step=s)
+                if logits is None:
+                    raise RuntimeError(
+                        "D-029 monotone unmask does not stop mid-schedule; "
+                        f"the meter refused forward {s} of {calls}")
             rows = logits[masked].float()                                   # [N, V]
             raw_logp = torch.log_softmax(rows, dim=-1)
             restricted = rows.masked_fill(~allowed_dev, float("-inf"))
