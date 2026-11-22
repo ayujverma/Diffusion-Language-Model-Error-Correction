@@ -1188,3 +1188,38 @@ groups as Family A".
   to the six Family A arms, not a selected call budget, and not Q-6 / ReMDM. Init
   remains checkpoint 8000 (D-038). Screen seed `20261120`, 1000 updates. Q-5 stays
   open until its own entry.
+
+**D-052 (2026-11-22) SCOPE training confidence and the SCOPE step. Closes Q-5.
+Recorded before any SCOPE trainer code.** Does not change D-049's D3IM sampler and
+does not add a confidence-weighted SCOPE arm.
+
+- **Two definitions, kept apart.** SCOPE training ranks a commit by the
+  temperature-1 probability of the token that was sampled, `x̂`. D3IM's sampler
+  confidence stays what D-049 already says: the float32 full-vocabulary probability
+  of the new allowed argmax. The paper's line is only "confidence(ẑ) // temperature
+  = 1 logits". It does not say "max". Ranking by the sampled token's probability is
+  the training rule. Ranking by the max probability is not, and it is not borrowed
+  from D3IM.
+- **SCOPE branch.** Mask rate `r ~ Beta(2, 2)`, drawn as `G1 / (G1 + G2)` with each
+  `G` the sum of two exponential draws (`-log U`) from the `scope_mask` stream,
+  then clamped to `[0.1, 0.9]`. Each editable response token is masked independently
+  with probability `r`. The prompt is never masked. A `no_grad` forward on that
+  masked context draws `x̂` from `softmax(aligned_logits / 1.5)` restricted to the
+  D-029 allowed set, one CPU multinomial per masked position in row-major order,
+  from the `scope_sample` stream. Confidence is `softmax(aligned_logits)` at
+  temperature 1 of that sampled id, full vocabulary, not the temperature-1.5
+  probability and not the restricted-policy probability. Per example, commit the
+  top `K_b = max(1, floor(0.3 * |M_b|))` masked positions, highest confidence first,
+  exact ties broken by the smallest position. Still-masked positions stay the mask
+  id. Originally visible response tokens stay the gold token in the input.
+- **Loss.** Mean CE on committed-this-step ∪ still-masked. That union is the
+  originally masked set. Originally visible clean tokens are excluded. No `a(t)`
+  and no rank weights. The draft pass is `no_grad`. The second forward receives
+  the gradient. An empty mask skips the optimizer and logs `skipped_zero_mask`.
+- **MDM mix.** One Bernoulli(0.5) from the `scope_mix` stream, before the branch,
+  not `random` and not the `train_mask` stream. On the MDM draw the step is D-028
+  `L_mask` only (one forward with gradient) and `scope_mask` / `scope_sample` do
+  not advance. On the SCOPE draw, `train_mask` does not advance.
+- **Unchanged.** D3IM evaluation, Q-6 / ReMDM, Family A, the three ProSeCo arms,
+  batch 16 for every Family B arm, init checkpoint 8000, seed `20261120`, 1000
+  updates. This is not a SCOPE paper reproduction.

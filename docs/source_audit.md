@@ -204,9 +204,10 @@ Published (Appendix B):
   K_b = max(1, ⌊ρ|M_b|⌋); the rest stay masked. Loss is the mean CE over C ∪ M
   (clean visible positions excluded). With probability 0.5 the step is replaced by
   standard MDM training.
-- **Ambiguity Q-5:** Alg. 2 line 4 says only "confidence(ẑ) // temperature = 1 logits".
-  It does not say whether this is the max probability (as in D3IM) or the
-  probability of the sampled x̂. No code was found to resolve it.
+- **Q-5 closed by D-052:** Alg. 2 line 4 says only "confidence(ẑ) // temperature = 1 logits".
+  Training ranks by the temperature-1 probability of the sampled `x̂`, not by the
+  max probability. D3IM's sampler confidence stays the probability of the new
+  allowed argmax (D-049). No code repository was found; this is a recorded choice.
 - D3IM is that paper's sampler, not a separate model. The audit does not record
   a SCOPE training backbone and does not identify it with LLaDA. Our inference
   path (D-049) runs D3IM on Open-dCoder. D-050.
@@ -296,9 +297,10 @@ is no third-party data or code to attribute.
   a stop-grad argmax over the D-029 allowed set at every editable response position.
   The pinned code default (keep the visible token, argmax only where masked) is not
   the training rule. D-049 still specifies the inference sampler only.
-- **Q-5** SCOPE commit confidence: max probability vs. probability of the sampled token?
-  Still open for SCOPE training. D-049's D3IM sampler scores the new allowed
-  candidate by its float32 full-vocabulary probability. That does not resolve Q-5.
+- **Q-5** *(closed for training by D-052)* SCOPE commits are ranked by the
+  temperature-1 probability of the sampled token. D-049's D3IM sampler still scores
+  the new allowed argmax by its float32 full-vocabulary probability. The two
+  confidences are not the same quantity.
 - **Q-6** ReMDM adaptation to Open-dCoder (schedule, σ_t choice) is not yet audited.
   D-049's `extra_unmask` control is not that adaptation.
 - **Q-7** Whether the pretrained model's visible-token copying (L_keep ≈ 6e-5 and
