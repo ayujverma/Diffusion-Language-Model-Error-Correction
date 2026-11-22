@@ -163,7 +163,7 @@ Published (paper Algorithm 1 and code `diffusion.py`):
   positions (Alg. 1 line 9). The code default (`use_model_outputs_as_corrector_input: False`)
   instead takes argmax at masked positions and keeps x₀ at visible ones. These agree
   under MDLM's SUBS "copy-over" parameterisation but **not** for Open-dCoder, which
-  has no copy-over (decision deferred to the adapter milestone, Q-4).
+  has no copy-over. Training uses the paper rule, not this code default (D-051).
 - A second forward pass with gradient. Self-correction CE at all positions, with the
   same 1/t weight, and the mask logit set to −∞ on the corrector output.
 - The "error-prioritized" variant (paper App. C.3 Eq. 11, code flag
@@ -292,10 +292,10 @@ is no third-party data or code to attribute.
   autocast passes the screening tolerances on MPS but is slower; pure bf16 parameters
   fail argmax agreement. The choice is fp32 full fine-tuning. The A100 is still
   unmeasured, and any precision change there needs its own comparison and entry.
-- **Q-4** ProSeCo corrector input on a non-copy-over backbone: argmax at all
-  positions (paper) vs. argmax only at masked positions (code default)? Still open
-  for training (milestone 7). D-049 specifies the inference sampler only: the
-  corrector rewrites every editable position of a temporary complete draft.
+- **Q-4** *(closed for training by D-051)* ProSeCo corrector input on Open-dCoder is
+  a stop-grad argmax over the D-029 allowed set at every editable response position.
+  The pinned code default (keep the visible token, argmax only where masked) is not
+  the training rule. D-049 still specifies the inference sampler only.
 - **Q-5** SCOPE commit confidence: max probability vs. probability of the sampled token?
   Still open for SCOPE training. D-049's D3IM sampler scores the new allowed
   candidate by its float32 full-vocabulary probability. That does not resolve Q-5.

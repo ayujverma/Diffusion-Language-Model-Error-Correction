@@ -1116,3 +1116,75 @@ Does not change D-000, D-046, or D-049.
   fixtures, then the other Family B trainers including `proseco_gen_conf` (D-046).
   Q-6 (ReMDM) stays an inference follow-up. Do not treat milestone 6 as proof that
   those trainers are faithful.
+
+## Milestone 7: Family B training adapters (2026-11-22)
+
+**D-051 (2026-11-22) ProSeCo training draft, corrector time weight, and online
+rank groups. Closes Q-4. Recorded before any Family B trainer code.** Does not
+change D-046's loss formula, D-049's sampler, or D-050's backbone. Supersedes, for
+the online `proseco_gen_conf` arm only, D-046's phrase "the same (budget, stage-bin)
+groups as Family A".
+
+- **Training draft.** On each step the mask is a D-028 response-only Bernoulli draw
+  on the gold response (labels are allowed for the mask and for the loss). `z_t`
+  is that gold sequence with masked editable positions replaced by the mask id.
+  Prompt and pad are unchanged. The first forward's aligned logits (D-005) produce
+  `ŷ = sg(argmax)` over the D-029 allowed set, smallest id on ties, at **every
+  editable response position**. The corrector input writes that token at every
+  editable position, including positions that were visible in `z_t`. Prompt and pad
+  stay as they are. Gold is not written into any position that is masked in `z_t`.
+  This is ProSeCo Algorithm 1 (argmax at all positions) and the same allowed-set
+  argmax the milestone-6 temporary complete draft uses. It is not a sampler: eval
+  samplers still receive no gold, no error mask, and no checker output.
+- **Alternative that is not the training rule.** Pinned `diffusion.py` at `43ce881`
+  defaults `use_model_outputs_as_corrector_input: False` with `use_argmax_for_corrector:
+  True`: argmax only where `z_t` is the mask, and the visible token (the gold `x_0`)
+  is kept elsewhere. LLaDA's copy-over makes that equal to argmax-everywhere.
+  Open-dCoder has no copy-over (D-050), so a visible token's prediction can differ
+  from the token sitting there. Keeping the visible gold token would train a
+  different corrector input. That code default is not used.
+- **Time weight `a(t) = 1/t`.** `t` is that example's D-028 mask rate (clamped to
+  `[1/500, 1 − 1/500]`, so `1/t` is finite). For the log-linear schedule the paper's
+  `|α̇/(1−α)|` equals `1/t` when `α = 1 − t` and `t` is the mask rate. The pinned
+  code's `dsigma / expm1(sigma)` is that scalar, and `use_weighted_corrector_loss`
+  is true. This project uses `1/t` directly and does not introduce a second
+  continuous-time noise schedule. `a(t_b)` multiplies each of example `b`'s corrector
+  terms **before** the pool. It is not applied to `L_mask`. The same `a(t)` is used
+  for `proseco_basic`, `proseco_error_prioritized`, and `proseco_gen_conf`.
+- **`L_mask`.** D-017 / D-028 on the first forward: pooled CE over masked response
+  positions, no `1/t`, no Open-dLLM path term. The first forward keeps its gradient
+  for this term. The argmax and `log ĉ` are detached from it. An all-zero mask
+  minibatch skips the optimizer and the scheduler and logs `skipped_zero_mask`. It
+  does not run the corrector.
+- **Corrector softmax.** Before the corrector CE or probability, the mask id is
+  removed from the normalizer (its probability is 0). That is the pinned line
+  `corrector_logits[..., mask_index] += neg_infinity` before `log_softmax`. `L_mask`
+  does not do this. The target at a loss position must not be the mask id.
+- **Pools, coefficient 1.** The pinned `configs/config.yaml` leaves
+  `mdlm_loss_weight` and `corrector_loss_weight` at 0 (placeholders). The training
+  objective is `L_mask + L_corr`.
+  - `proseco_basic`: `L_corr = Σ_i a(t_b(i)) ℓ_i / N` over editable positions
+    (one pool; `ℓ_i` is CE of the gold token on the second forward).
+  - `proseco_error_prioritized`: the same single pool and the same `a(t)`, but the
+    summand is `ℓ_i` where `ŷ_i ≠ gold` and `−p(gold)` where `ŷ_i = gold`. One
+    denominator, the editable count, matching the pinned reduction
+    `(term * attention).sum() / count`. This is not CE on the keep set.
+  - `proseco_gen_conf`: D-046's two means, with `a(t_b)` inside each sum,
+    `(Σ_{i∈E} a(t_b) w_i ℓ_i) / |E| + (Σ_{i∈K} a(t_b) ℓ_i) / |K|`. CE on both
+    sets. Not Eq. 11. Not Family A's `high_conf`.
+  Empty `E` or empty `K` contributes a graph-connected zero and is logged (D-010).
+  The second forward is the one that receives the corrector gradient. Both ProSeCo
+  forwards carry gradient, so the physical batch stays 16 for every Family B arm
+  (D-045). SCOPE's step count is stated in the Q-5 entry; it does not get a smaller
+  batch.
+- **`proseco_gen_conf` groups.** An online step has no bank budget and no saved
+  stage. The group is the D-011 stage bin of that example's mask rate `t_b`, edges
+  `(0.2, 0.4, 0.6, 0.8)`, ranked inside the physical minibatch. The score is
+  stop-grad `log ĉ` of the committed draft token from the **first** forward, on
+  error positions only, ranked upward, `β = 0.5`, float64 on CPU, then cast.
+  Weights have no gradient. Saved bank `log_c` is not read. The score is not `q`
+  and not a probability from the second forward.
+- **What this is not.** Not a ProSeCo paper reproduction, not LLaDA, not a change
+  to the six Family A arms, not a selected call budget, and not Q-6 / ReMDM. Init
+  remains checkpoint 8000 (D-038). Screen seed `20261120`, 1000 updates. Q-5 stays
+  open until its own entry.
