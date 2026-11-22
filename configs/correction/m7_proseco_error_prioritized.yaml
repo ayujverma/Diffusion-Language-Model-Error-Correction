@@ -1,0 +1,45 @@
+# Family B screen arm: proseco_error_prioritized (D-051, D-052).
+# Shared batch, seed, init checkpoint, and update cap. Online drafts from the train
+# split. This file does not train a Family A arm and does not name a test split.
+run_name: m7-proseco-error-prioritized-v1
+arm: proseco_error_prioritized
+seed: 20261120
+backbone: open-dcoder
+model_dir: runs/hf/open-dcoder-0.5B
+# TACC path of checkpoint 8000. Not a Family A ckpt-0001000.
+init_checkpoint: /work/10692/ayuj/ls6/dlmc/retained/warmup-pilot-v1-cont/checkpoints/ckpt-0008000
+data:
+  dir: runs/data/pilot-seed20261116
+  manifest_sha256: 990ecd1dd2341b81bc742fa91189b129877cd9b48b196fbdbc208e8586c81536
+  split: train
+  verify: true
+method: full
+dtype: float32
+autocast: null
+batch_size: 16
+optimizer: {name: adamw, lr: 3.0e-5, betas: [0.9, 0.999], eps: 1.0e-8, weight_decay: 0.01}
+scheduler: {name: linear_warmup_constant, warmup_updates: 20}
+clip_grad_norm: 1.0
+mask: {t_min: 0.002, t_max: 0.998}
+corrector:
+  time_weight: inv_t
+  beta: 0.5
+  stage_edges: [0.2, 0.4, 0.6, 0.8]
+scope:
+  mix_probability: 0.5
+  sample_temperature: 1.5
+  commit_rho: 0.3
+limits:
+  max_updates: 1000
+  max_wall_seconds: null
+  max_train_seconds: null
+  stop_at_unix: null
+checkpoint:
+  every_updates: 250
+  keep_last: 2
+  durable_dir: null
+  protect_updates: []
+  protect_every: 500
+log_every: 10
+memory_every: 50
+release_cache_every: 1

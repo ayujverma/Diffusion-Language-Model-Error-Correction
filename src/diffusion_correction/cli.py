@@ -4,7 +4,7 @@ Commands: ``doctor``, ``download-backbone`` (milestone 1); ``generate-data``,
 ``verify-data``, ``inspect-example`` (milestone 2); ``train``, ``benchmark``,
 ``precision-check``, ``calibrate``, ``compare-runs`` (milestone 3); bank commands
 (milestone 4); ``train-correction``, ``evaluate-repair`` (milestone 5);
-``evaluate-calls`` (milestone 6).
+``evaluate-calls`` (milestone 6); ``train-family-b`` (milestone 7).
 """
 
 from __future__ import annotations
@@ -413,6 +413,52 @@ def cmd_train_correction(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_train_family_b(args: argparse.Namespace) -> int:
+    """Online ProSeCo and SCOPE adapters. Train split only. Does not train Family A."""
+    from .training.family_b_config import load_family_b_config
+    from .training.family_b_run import prepare_family_b_trainer
+
+    overrides = dict(kv.split("=", 1) for kv in args.set or [])
+    overrides = {k: _yaml_value(v) for k, v in overrides.items()}
+    if args.seed is not None:
+        overrides["seed"] = args.seed
+    if args.max_updates is not None:
+        overrides["limits.max_updates"] = args.max_updates
+    if args.max_wall_seconds is not None:
+        overrides["limits.max_wall_seconds"] = args.max_wall_seconds
+    if args.durable_dir is not None:
+        overrides["checkpoint.durable_dir"] = args.durable_dir
+    if args.max_train_seconds is not None:
+        overrides["limits.max_train_seconds"] = args.max_train_seconds
+    if args.stop_at_unix is not None:
+        overrides["limits.stop_at_unix"] = args.stop_at_unix
+    if args.init_checkpoint is not None:
+        overrides["init_checkpoint"] = args.init_checkpoint
+    if args.data_dir is not None:
+        overrides["data.dir"] = args.data_dir
+    try:
+        cfg = load_family_b_config(args.config, overrides)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if cfg["data"]["split"] != "train":
+        raise SystemExit(f"train-family-b refuses split {cfg['data']['split']!r}")
+    device = resolve_device(args.device)
+    run_dir = Path(args.run_dir or f"runs/family_b/{cfg['run_name']}")
+    trainer = prepare_family_b_trainer(cfg, device, run_dir, args.resume)
+    print(json.dumps(trainer.describe(), indent=2))
+    print(json.dumps({"environment": environment_report(device)}, default=str), flush=True)
+
+    def request_stop(signum, _frame):
+        trainer.stop_signal = signal.Signals(signum).name
+        print(f"received {trainer.stop_signal}; stopping after the current update", flush=True)
+
+    for sig in (signal.SIGUSR1, signal.SIGTERM):
+        signal.signal(sig, request_stop)
+    summary = trainer.train()
+    print(json.dumps(summary, indent=2, default=str))
+    return 0
+
+
 def cmd_evaluate_repair(args: argparse.Namespace) -> int:
     from .evaluation.repair import make_allowed_for_adapter, repair_drafts, repair_drafts_proseco, summarize_repair
     from .training.bank_data import load_bank_drafts
@@ -667,6 +713,23 @@ def main(argv: list[str] | None = None) -> int:
     tc.add_argument("--init-checkpoint", default=None, help="override init_checkpoint (ckpt-0008000)")
     tc.add_argument("--set", nargs="*", default=[], help="dotted.key=YAML_VALUE overrides")
     tc.set_defaults(func=cmd_train_correction)
+
+    fb = sub.add_parser("train-family-b",
+                        help="online ProSeCo / SCOPE adapters (train split only; does not train Family A)")
+    fb.add_argument("--config", required=True)
+    fb.add_argument("--run-dir", default=None, help="default runs/family_b/<run_name>")
+    fb.add_argument("--device", default="auto", choices=["cpu", "mps", "cuda", "auto"])
+    fb.add_argument("--resume", default=None, help="'auto' or a checkpoint directory")
+    fb.add_argument("--seed", type=int, default=None)
+    fb.add_argument("--max-updates", type=int, default=None)
+    fb.add_argument("--max-wall-seconds", type=float, default=None)
+    fb.add_argument("--max-train-seconds", type=float, default=None)
+    fb.add_argument("--stop-at-unix", type=float, default=None)
+    fb.add_argument("--durable-dir", default=None)
+    fb.add_argument("--init-checkpoint", default=None, help="ckpt-0008000; not a Family A checkpoint")
+    fb.add_argument("--data-dir", default=None, help="train split only; test splits are refused")
+    fb.add_argument("--set", nargs="*", default=[], help="dotted.key=YAML_VALUE overrides")
+    fb.set_defaults(func=cmd_train_family_b)
 
     er = sub.add_parser("evaluate-repair", help="held-out complete-draft repair on bank drafts")
     er.add_argument("--checkpoint", required=True)

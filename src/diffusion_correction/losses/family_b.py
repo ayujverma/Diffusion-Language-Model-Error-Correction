@@ -381,6 +381,9 @@ def scope_context_ids(gold_ids: torch.Tensor, masked: torch.Tensor, committed: t
                       samples: torch.Tensor, mask_token_id: int) -> torch.Tensor:
     """Visible gold stays. Committed positions take ``samples``. The rest of the mask stays masked."""
     out = gold_ids.clone()
+    samples = samples.to(device=out.device)
+    committed = committed.to(device=out.device)
+    masked = masked.to(device=out.device)
     out[masked & ~committed] = mask_token_id
     out[committed] = samples[committed].to(dtype=out.dtype)
     return out
