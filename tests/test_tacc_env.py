@@ -116,7 +116,7 @@ def test_require_job_needs_the_full_node_partition(ls6):
 
 
 GPU_SLURM = ["env_check.slurm", "pilot.slurm", "continuation.slurm", "final_eval.slurm", "fixture_diagnostic.slurm",
-             "bank_collect.slurm", "call_budget_eval.slurm"]
+             "bank_collect.slurm", "call_budget_eval.slurm", "family_b_screen.slurm", "family_b_eval.slurm"]
 
 
 @pytest.mark.parametrize("name", GPU_SLURM)
