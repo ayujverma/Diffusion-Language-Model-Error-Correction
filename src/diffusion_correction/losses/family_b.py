@@ -19,12 +19,9 @@ import torch
 from ..models.adapter import DiffusionAdapter
 from ..models.alignment import SequenceLayout, assert_targets_predictable
 from ..sampling.candidates import greedy_allowed
+from .correction import token_error_masks
 from .masked import masked_diffusion_loss
 from .token_ce import zero_with_graph
-from .correction import token_error_masks
-
-PROSECO_ARMS = ("proseco_basic", "proseco_error_prioritized", "proseco_gen_conf")
-
 
 def time_weight(t: float) -> float:
     """``a(t) = 1/t`` for a mask rate in ``(0, 1]`` (D-051)."""
@@ -120,6 +117,14 @@ def _partition(draft_ids: torch.Tensor, targets: torch.Tensor, editable: torch.T
     return err, keep, int(err.sum()), int(keep.sum())
 
 
+def _pooled(values: torch.Tensor, scales: torch.Tensor, aligned_logits: torch.Tensor,
+            n_err: int, n_keep: int) -> torch.Tensor:
+    loss = (scales * values).sum() / int(values.numel())
+    if n_err == 0 or n_keep == 0:
+        loss = loss + zero_with_graph(aligned_logits)
+    return loss
+
+
 def proseco_basic_loss(aligned_logits: torch.Tensor, targets: torch.Tensor, draft_ids: torch.Tensor,
                        editable: torch.Tensor, t_per_example: Sequence[float],
                        mask_token_id: int) -> CorrectorTerms:
@@ -130,10 +135,29 @@ def proseco_basic_loss(aligned_logits: torch.Tensor, targets: torch.Tensor, draf
         loss = zero_with_graph(aligned_logits)
     else:
         ce = -gathered_corrector_logp(aligned_logits, targets, editable, mask_token_id)
-        scales = example_scales(editable, t_per_example, ce)
-        loss = (scales * ce).sum() / n
-        if n_err == 0 or n_keep == 0:
-            loss = loss + zero_with_graph(aligned_logits)
+        loss = _pooled(ce, example_scales(editable, t_per_example, ce), aligned_logits, n_err, n_keep)
+    return CorrectorTerms(loss=loss, n_error=n_err, n_keep=n_keep,
+                          error_empty=n_err == 0, keep_empty=n_keep == 0)
+
+
+def proseco_error_prioritized_loss(aligned_logits: torch.Tensor, targets: torch.Tensor,
+                                   draft_ids: torch.Tensor, editable: torch.Tensor,
+                                   t_per_example: Sequence[float], mask_token_id: int) -> CorrectorTerms:
+    """Eq. 11: CE where the draft is wrong, ``-p(gold)`` where it is already right.
+
+    One denominator, the editable count, matching the pinned reduction. The keep
+    term is the probability, not the log probability.
+    """
+    err, _, n_err, n_keep = _partition(draft_ids, targets, editable)
+    n = int(editable.sum())
+    if n == 0:
+        loss = zero_with_graph(aligned_logits)
+    else:
+        logp = gathered_corrector_logp(aligned_logits, targets, editable, mask_token_id)
+        ce = -logp
+        prob = logp.exp()
+        term = torch.where(err[editable], ce, -prob)
+        loss = _pooled(term, example_scales(editable, t_per_example, term), aligned_logits, n_err, n_keep)
     return CorrectorTerms(loss=loss, n_error=n_err, n_keep=n_keep,
                           error_empty=n_err == 0, keep_empty=n_keep == 0)
 
@@ -159,10 +183,9 @@ def proseco_training_step(adapter: DiffusionAdapter, layout: SequenceLayout,
     """Two forwards. ``layout.input_ids`` is the context (gold, before masking).
 
     ``targets`` defaults to that context. A different target tensor changes the loss
-    and does not change ``z_t`` or the draft. Only ``proseco_basic`` is accepted
-    until the other arms land.
+    and does not change ``z_t`` or the draft.
     """
-    if arm != "proseco_basic":
+    if arm not in ("proseco_basic", "proseco_error_prioritized"):
         raise ValueError(f"arm {arm!r} is not implemented on this step yet")
     if masked_positions.shape != layout.input_ids.shape:
         raise ValueError("mask shape must match the layout")
@@ -178,7 +201,11 @@ def proseco_training_step(adapter: DiffusionAdapter, layout: SequenceLayout,
     cand, log_c_map = detached_allowed_argmax(logits1, allowed)
     draft = assemble_draft(z_ids, layout.editable_mask, cand)
     logits2 = adapter.aligned_logits(layout.with_input_ids(draft))
-    terms = proseco_basic_loss(logits2, targets, draft, layout.editable_mask, t_per_example, mask_id)
+    if arm == "proseco_basic":
+        terms = proseco_basic_loss(logits2, targets, draft, layout.editable_mask, t_per_example, mask_id)
+    else:
+        terms = proseco_error_prioritized_loss(logits2, targets, draft, layout.editable_mask,
+                                              t_per_example, mask_id)
     loss = l_mask_out.loss + terms.loss
     parts = {
         "arm": arm,
