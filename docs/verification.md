@@ -1,8 +1,9 @@
 # Verification report
 
 Status labels: IMPLEMENTED · TESTED LOCALLY (tiny backbone / fixtures) · TESTED ON
-REAL BACKBONE (Open-dCoder-0.5B @ d0d86d5b) · EXPERIMENT COMPLETED. No experiment
-has been run yet; nothing here is evidence about the research hypothesis.
+REAL BACKBONE (Open-dCoder-0.5B @ d0d86d5b) · EXPERIMENT COMPLETED.
+Sections below are chronological; later milestones supersede earlier “not run” notes.
+M5 screen results are evidence about Family A weighting only — not ProSeCo, not test splits.
 
 Machine: MacBook Pro M2 Max, 64 GB, macOS 26.6.2 (arm64). Python 3.14.7, torch
 2.15.0. Main env: `requirements-lock.txt`. Reference env: `requirements-ref-lock.txt`.
@@ -961,7 +962,68 @@ CPU float64 L2 (`norm_measurement: chunked_cpu_float64_l2`). `TOLERANCES` unchan
 | `cuda_fixture.py check --device cpu` vs the new fixture | **passed**; per-tensor grad/update `max_rel` 0.0 |
 | `tests/test_cuda_fixture_norms.py` (+ diagnostic/env/scripts tests) | targeted suite green; 1% tolerances asserted; legacy overwrite and legacy-check refusals covered |
 
-### Not run
+### Not run (at time of D-036 entry; superseded)
 
-- A fresh TACC CUDA pilot (`pilot.slurm`) against `cuda_pilot_fixture_f64norms`.
-  **No `PILOT_PASSED` is claimed here.**
+- At D-036 write time a fresh pilot was still required. Later: pilot / continuation /
+  final eval completed (D-037); do not treat this subsection as current status.
+
+## Milestone 5 shared-bank screen (2026-11-20) — EXPERIMENT COMPLETED (D-047)
+
+**Software.** Shared-bank correction trainer, repair eval, six arm configs, TACC
+`correction_screen.slurm` / `repair_eval.slurm`: IMPLEMENTED; unit tests
+`tests/test_correction_trainer.py` TESTED LOCALLY; TACC runs TESTED ON REAL BACKBONE.
+
+**Jobs (user-submitted on Lonestar6).** Training `3600435` (tasks 0–4) + shuffled
+resubmit `3600756`; dedicated repair `3600803` (0–5). Batch 16 (D-045). Bank
+`m4-ckpt8000-v1`, init `ckpt-0008000`, seed 20261120, λ=μ=1, β=0.5, repair val@T=4
+(D-044). Local artifact mirror: `runs/tacc_results/correction/` (gitignored).
+
+**Dedicated repair vs screen @1000.** For every arm, repair_rate, damage_rate, and
+n_wrong_after in `repair/m5-*-v1/summary.json` match `last_eval.repair` exactly.
+Shared: 3600 drafts, n_wrong_before=3555, n_correct_before=68445.
+
+| arm | updates | stop | repair@0 | damage@0 | repair@1000 | damage@1000 | wrong_after@1000 | net Δ wrong |
+| --- | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| uniform | 1000 | max_updates | 0.1381 | 0.0515 | 0.5733 | 0.0243 | 3180 | -375 |
+| high_conf | 1000 | max_updates | 0.1381 | 0.0515 | 0.5665 | 0.0259 | 3314 | -241 |
+| gen_difficulty | 1000 | max_updates | 0.1381 | 0.0515 | 0.5744 | 0.0288 | 3483 | -72 |
+| current_loss | 1000 | max_updates | 0.1381 | 0.0515 | 0.5632 | 0.0295 | 3571 | +16 |
+| low_conf | 1000 | max_updates | 0.1381 | 0.0515 | 0.5803 | 0.0246 | 3175 | -380 |
+| shuffled_conf | 1000 | max_updates | 0.1381 | 0.0515 | 0.5854 | 0.0277 | 3367 | -188 |
+
+**Reading (not a ProSeCo comparison; val only; 1 seed; 1k updates).** Correction
+training helps a lot vs @0. High-`c` / gen_difficulty weighting did not beat uniform
+on net wrong tokens; low_conf ≈ uniform best. Label: **EXPERIMENT COMPLETED** for
+this screen only (D-047).
+
+## Milestone 6 samplers and call budgets (2026-11-20) — TESTED LOCALLY (D-049)
+
+**Software only.** No TACC job. No primary call budget selected. Not a Family A or
+Family B training result. The M5 repair numbers above stay the one-forward screen.
+
+Implemented and covered by `tests/test_m6_sampler.py` (15 tests) inside the suite
+that reported **300 passed**:
+
+- `ForwardMeter`: one aligned forward is one NFE; a call past the cap does not run the model.
+- ProSeCo-style sampler: temporary complete draft vs masked main state; a visible token
+  can be revised; S = 0 matches D-029; fixed points are not backfilled; ω = 2 and S = 4
+  are provisional defaults (`configs/eval/m6_sampler.yaml`).
+- D3IM: clean-slate remasking, frozen earlier blocks, and a shorter horizon that is
+  not a prefix of a longer one.
+- `extra_unmask`: spends the whole cap; scores the current token; does not remask.
+  This is not ReMDM (Q-6 open). The CDLM threshold decoder is not implemented.
+- `repair_drafts_proseco`: first iteration matches `repair_drafts`; later iterations
+  count. `dlmc evaluate-repair --method greedy` is unchanged.
+- `dlmc evaluate-calls` refuses `test_id`, `test_long`, and `test_unseen`.
+
+User-submitted stub, not run: `scripts/tacc/call_budget_eval.slurm`. Family A
+`ckpt-0001000` directories are consumers only.
+
+These tests check the D-049 token-state rules on the tiny backbone. They do not
+show that an Open-dCoder generation matches LLaDA, and they do not show that SCOPE
+training matches the paper. D-050. No Open-dCoder call-budget run exists.
+
+## Milestone 4 bank (pointer)
+
+Bank `m4-ckpt8000-v1` job 3597054: **EXPERIMENT COMPLETED** (D-043). Schema and
+commands: `docs/milestone4_bank.md`. Do not re-collect under the same bank name.

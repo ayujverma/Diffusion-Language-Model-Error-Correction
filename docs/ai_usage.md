@@ -212,3 +212,48 @@ Human checks:
 - The agent added a shared chunked CPU float64 L2 in `cuda_fixture.py`, pointed the pilot
   at `cuda_pilot_fixture_f64norms`, wrote D-036, generated and self-checked the new Mac
   fixture, and added tests. No Slurm jobs and no training.
+
+## 2026-11-20: M5 bookkeeping + M6 handoff prompt (Cursor agent)
+
+- Restored missing `docs/decisions.md` entries D-037–D-045 from prior session
+  transcripts; recorded D-047 (M5 EXPERIMENT COMPLETED from artifacts) and D-048
+  (array `squeue` EndTime multiline fix). D-046 (`proseco_gen_conf`) kept.
+- Updated `docs/handoff.md`, `docs/verification.md` (M5 results table), and wrote
+  `docs/m6_agent_prompt.md` for a fresh Milestone-6 agent.
+- Patched `correction_screen.slurm`, `bank_collect.slurm`, `continuation.slurm` for
+  D-048. No new TACC jobs; no invented remote results.
+
+## 2026-11-20: Milestone 6 samplers and call-budget harness (Cursor agent, Grok 4.7)
+
+What the AI did:
+- Read the handoff, implementation plan, D-022 through D-048, the milestone-5
+  verification section, source-audit sampler notes (Q-4, Q-5, Q-6), the bank schema,
+  the build-prompt sampler section, and the pinned ProSeCo `llada/generate.py`.
+- Wrote D-049 before the sampler behavior was locked in code. Implemented the NFE
+  meter, the ProSeCo-style correction sampler, D3IM, the extra-unmask control
+  (explicitly not ReMDM), budgeted repair, `dlmc evaluate-calls`, the eval config,
+  and a user-submitted Slurm stub.
+- Ran `.venv/bin/python -m pytest -q`: 300 passed. No TACC job. No experiment claim.
+
+Reused or derived code:
+- The correction sampler follows the structure of ProSeCo `llada/generate.py` at
+  `43ce881` (predictor, temporary complete draft, fixed-point argmax, NFE split).
+  It is a new implementation against `DiffusionAdapter.aligned_logits`, not a copy
+  of that file. D-049 lists the differences. No ProSeCo training code was ported.
+
+Human checks:
+- None. The author has not reviewed the milestone-6 sampler or the D-049 contract.
+
+## 2026-11-21: Backbone and sampler clarification (Cursor agent, Grok 4.7)
+
+What the AI did:
+- Recorded D-050. Open-dCoder stays the backbone. ProSeCo's released sampler is
+  LLaDA-8B. SCOPE's audited paper has algorithms and no pinned code repo; D3IM is
+  its sampler, not a third model. Milestone 6 is a local software gate, not a
+  paper-faithfulness certificate. Milestone 7 starts with Q-4 and Q-5.
+- Updated `docs/decisions.md`, `docs/implementation_plan.md`, `docs/handoff.md`,
+  `docs/source_audit.md`, and `docs/verification.md`. No training and no TACC run.
+
+Human checks:
+- None. The user asked why LLaDA was not used and whether milestone 6 is ready
+  for milestone 7. That question is not a review of the sampler code.

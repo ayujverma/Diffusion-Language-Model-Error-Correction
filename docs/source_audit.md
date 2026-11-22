@@ -175,10 +175,21 @@ Published (paper Algorithm 1 and code `diffusion.py`):
   fixed-point iterations of argmax over the active region. Each iteration counts as
   one NFE.
 
-Our adaptation (planned, not implemented): Open-dCoder backbone, our tasks, our
-prompt/response layout and shift; Open-dCoder's U(0,1)-clamped mask ratio unless
-the adapter milestone decides otherwise. Online draft construction makes this a
-**family-B** comparison, not the shared-draft control.
+Our adaptation (training still not implemented; inference sampler is D-049):
+Open-dCoder backbone, our tasks, our prompt/response layout and shift; Open-dCoder's
+U(0,1)-clamped mask ratio unless the adapter milestone decides otherwise. Online
+draft construction makes the training objective a **family-B** comparison, not the
+shared-draft control. The milestone-6 sampler (`sampling/proseco.py`) is the shared
+inference decoder only. It is not Family A and not `proseco_gen_conf`.
+
+ProSeCo's released sampler is LLaDA, not Open-dCoder. `llada/generate.py` at the
+pinned commit loads `GSAI-ML/LLaDA-8B-Instruct`. LLaDA uses the SUBS copy-over
+parameterisation: at a visible position the model predicts the token that is
+already there. Open-dCoder has no copy-over and keeps the Qwen2 shift (position
+i−1 predicts token i). D-050 records why this project stays on Open-dCoder. The
+milestone-6 sampler copies ProSeCo's two-sequence structure (masked main state,
+temporary complete draft, fixed-point argmax) and changes the schedule, the
+allowed-token argmax, and the lack of EOS blocks, as listed in D-049.
 
 ### 3.2 SCOPE + D3IM
 
@@ -196,6 +207,9 @@ Published (Appendix B):
 - **Ambiguity Q-5:** Alg. 2 line 4 says only "confidence(ẑ) // temperature = 1 logits".
   It does not say whether this is the max probability (as in D3IM) or the
   probability of the sampled x̂. No code was found to resolve it.
+- D3IM is that paper's sampler, not a separate model. The audit does not record
+  a SCOPE training backbone and does not identify it with LLaDA. Our inference
+  path (D-049) runs D3IM on Open-dCoder. D-050.
 
 ### 3.3 CDLM (related work; reference only)
 
@@ -279,9 +293,14 @@ is no third-party data or code to attribute.
   fail argmax agreement. The choice is fp32 full fine-tuning. The A100 is still
   unmeasured, and any precision change there needs its own comparison and entry.
 - **Q-4** ProSeCo corrector input on a non-copy-over backbone: argmax at all
-  positions (paper) vs. argmax only at masked positions (code default)?
+  positions (paper) vs. argmax only at masked positions (code default)? Still open
+  for training (milestone 7). D-049 specifies the inference sampler only: the
+  corrector rewrites every editable position of a temporary complete draft.
 - **Q-5** SCOPE commit confidence: max probability vs. probability of the sampled token?
+  Still open for SCOPE training. D-049's D3IM sampler scores the new allowed
+  candidate by its float32 full-vocabulary probability. That does not resolve Q-5.
 - **Q-6** ReMDM adaptation to Open-dCoder (schedule, σ_t choice) is not yet audited.
+  D-049's `extra_unmask` control is not that adaptation.
 - **Q-7** Whether the pretrained model's visible-token copying (L_keep ≈ 6e-5 and
   L_error ≈ 15.8 on one doctor example) is typical. This is a single example, not
   evidence. Measure it in the post-warmup signal diagnostic.

@@ -1,18 +1,21 @@
 # Handoff for a fresh session
 
-As of 2026-11-17. **Milestones 1, 2 and 3 are complete.** Milestone 3 (masked warmup
-and difficulty calibration) was completed on the local M2 Max: its software is
-TESTED ON REAL BACKBONE, Gate C passed, the bounded common warmup ran to its cap, and
-the validation-only calibration is done. The common warmup **reached its 1,000-update
-cap while still improving**. The user chose to continue it on TACC Lonestar6 (D-033).
-Local preparation for that is complete: code, scripts, transfer manifest and runbook
-`docs/warmup_continuation.md`. **Nothing has run on TACC yet.** The transfer, Ranch
-backup, environment check, CUDA pilot, continuation and final comparison are pending,
-and the user submits them. Milestone 4 has **not** been started.
-No experimental arm has been trained, and no test split has been evaluated. This
-file should be enough to continue. The detailed records are in `docs/decisions.md`,
-`docs/verification.md`, `docs/source_audit.md`, `docs/implementation_plan.md` and
-`docs/data_format.md`; if they disagree with this file, they win.
+As of 2026-11-20. **Milestones 1–5 are complete in substance. Milestone 6 software
+is TESTED LOCALLY (D-049): samplers and the call-budget harness, no TACC eval and
+no selected primary budget.** Warmup continuation
+on Lonestar6 selected checkpoint 8000 (D-037/D-038). Milestone 4 bank `m4-ckpt8000-v1`
+is DONE (job 3597054, D-043). Milestone 5 shared-bank screen is
+**EXPERIMENT COMPLETED** (D-047): six weighting arms trained to 1000 updates
+(jobs 3600435 / 3600756) and dedicated repair eval (job 3600803) matches screen
+`@1000`. High gen-time confidence weighting did **not** beat uniform; `low_conf` ≈
+`uniform` best on net wrong tokens. **No test split has been evaluated.** ProSeCo /
+SCOPE / `proseco_gen_conf` are **not** trained (milestone 7). Next coding milestone
+is **7** (prior-method training adapters). The M5 greedy repair is a screen metric
+only; call-budget comparisons use the milestone-6 harness. Detailed records:
+`docs/decisions.md` (through D-050),
+`docs/verification.md`, `docs/source_audit.md`, `docs/implementation_plan.md`,
+`docs/milestone4_bank.md`, `docs/data_format.md`; if they disagree with this file,
+they win.
 
 ## 1. Inputs (full spec, stored in the repo)
 
@@ -56,15 +59,19 @@ These are four different things (uniform, c, d_gen, d_now) and must stay distinc
 2. uniform;
 3. high c;
 4. current loss;
-5. ProSeCo error-prioritized, adapted;
-6. SCOPE with D3IM, adapted;
+5. ProSeCo basic and error-prioritized, adapted (Family B);
+6. SCOPE with D3IM, adapted (Family B);
 7. low c;
 8. shuffled c;
-9. d_gen.
+9. d_gen;
+10. **`proseco_gen_conf` (D-046)** — ProSeCo online training with train-time
+    rank-weighting of error CE by stop-grad generation confidence of the committed
+    draft token; Family B extension, not a shared-bank arm.
 
-Arms 5 and 6 form a separate comparison family. The primary outcome is
-final-answer accuracy at a validation-selected fixed model-call budget. Extensions
-stay optional.
+Arms 5, 6, and 10 form a separate comparison family (online / prior-method). Arms
+2–4 and 7–9 are the shared-bank Family A screen (all six kept for later matched
+budgets). The primary outcome is final-answer accuracy at a validation-selected
+fixed model-call budget (milestone 6 accounting). Extensions stay optional.
 
 **Rules.**
 - Do not change the question or drop arms; record conflicts in `decisions.md`.
@@ -89,8 +96,12 @@ stay optional.
 | Milestone-1 advisor follow-ups | DONE (D-016, D-017) |
 | 2: tasks, format, checker, splits, inspect-example | DONE and closed as software (D-018 to D-021, D-024). Pilot grid still labelled provisional (D-019, D-032) |
 | 3: masked warmup and difficulty calibration | **DONE** (D-028 to D-032). Software TESTED ON REAL BACKBONE; Gate C passed; warmup ran to its 1,000-update cap (not converged); validation calibration done; pilot dataset kept |
-| Warmup continuation on Lonestar6 (D-033) | **PREPARED, NOT RUN.** Code and scripts TESTED LOCALLY; every TACC step pending (`docs/warmup_continuation.md`) |
-| 4 to 8 | not started |
+| Warmup continuation on Lonestar6 (D-033) | **DONE** (D-037): pilot 3593382; continuation 3593457 → update 8712; final eval 3595133; generator = ckpt-0008000 (D-038) |
+| 4: immutable draft bank | **DONE** (D-043): bank `m4-ckpt8000-v1`, job 3597054 |
+| 5: shared-bank correction screen | **EXPERIMENT COMPLETED** (D-044/D-045/D-047): six arms @ 1000 updates + repair job 3600803 |
+| 6: correction samplers + call-budget eval harness | **SOFTWARE DONE** (D-049): TESTED LOCALLY. Not run on TACC. No primary budget selected |
+| 7: prior-method adapters (ProSeCo ×3 incl. `proseco_gen_conf` D-046, SCOPE) | **NEXT** — not started |
+| 8: cost estimate, main grid, analysis | not started |
 
 **Milestone-3 completed items:**
 - Mask policy (D-028), sampler policy (D-029), precision and trainable parameters
@@ -104,46 +115,44 @@ stay optional.
 - Calibration: an 18-setting screen, then 10 settings × 200 val problems × 5 budgets.
 - `paper/methods.md` draft (no results).
 
-**Milestone-3 incomplete or deferred items:**
-- The warmup is not converged. The user chose to continue it (D-033); the continuation
-  is prepared but has not run.
-- The final primary budget is not chosen (deferred to milestone 4/5 by D-031).
-- The Colab launcher has not been run; no A100 measurement exists.
-- No human review.
+**Milestone-3 incomplete or deferred items (historical):**
+- The 1k warmup was not converged; continuation on TACC selected ckpt-0008000 (done).
+- Primary comparison budget for the M5 screen: **T=4** (D-044).
+- The Colab launcher was not used; A100 measurements exist from Lonestar6.
+- No human review of the full codebase is recorded.
 
 ## 4. Next steps
 
-**First: the warmup continuation (D-033).** Follow `docs/warmup_continuation.md` §4 in
-order. The user authenticates and submits every job:
-1. stage and copy the transfer from the Mac;
-2. verify and install on ls6;
-3. back up checkpoint 1000 to Ranch;
-4. build the environment;
-5. run `env_check.slurm`;
-6. run `pilot.slurm`;
-7. run `continuation.slurm` from the original checkpoint 1000;
-8. run `final_eval.slurm`.
+**First: Milestone 7**, starting with written answers to Q-4 and Q-5 (D-050). Then
+train `proseco_basic`, `proseco_error_prioritized`, `proseco_gen_conf` (D-046), and
+SCOPE+D3IM on Open-dCoder. Score them with `dlmc evaluate-calls`. Family A is not
+ProSeCo. The M5 one-forward repair is a screen metric only. Milestone 6 does not
+prove the ports match LLaDA or the SCOPE paper. The user submits every TACC
+command.
 
-**Current state (2026-11-18).**
-- Environment check 3592790 passed. Pilot 3592809 **failed** the native-fp32 embedding
-  update-norm check (0.0106 vs 0.01). Diagnostic 3593175 confirmed norm accumulation.
-- **D-036** is implemented: new fixture `cuda_pilot_fixture_f64norms` (chunked CPU float64
-  norms; 1% tolerance unchanged). Historical fixture preserved. Mac self-check passed.
-- A **fresh** CUDA pilot against the new fixture is still required for `PILOT_PASSED`.
-  Continuation remains blocked until then.
+**Milestone 6 (software, D-049, clarified by D-050).** ProSeCo-style correction
+sampler, D3IM, an extra-unmask control that is not ReMDM, NFE accounting, and
+`dlmc evaluate-calls` / `evaluate-repair --method proseco`. Provisional ω = 2 and
+S = 4. Tested locally on the tiny backbone. Not run on TACC. Stub, not submitted:
+`scripts/tacc/call_budget_eval.slurm`. The M6 code is still uncommitted on the Mac
+until a commit is made; `stage_update.sh` will refuse the dirty tree.
 
-Each step's pass condition is in the runbook (§10 lists those required before the
-continuation). Record CUDA results in `verification.md` only after the job outputs
-exist. After the final comparison, the user decides which checkpoint becomes the
-milestone-4 generator, and a new decisions entry records it with its sha256.
+**Already done (do not redo):**
+- Warmup continuation + generator selection (D-037/D-038): ckpt-0008000.
+- Bank `m4-ckpt8000-v1` (D-043); runbook `docs/milestone4_bank.md`.
+- Family A M5 screen + repair (D-044/D-045/D-047). Local copies under
+  `runs/tacc_results/correction/` (gitignored).
+- D-048: array-job `squeue` EndTime multiline fix in TACC slurm scripts.
 
-**Then milestone 4: immutable draft bank and signal diagnostics.** Full list in
-`docs/implementation_plan.md`. Do not start it before that generator decision. Then:
-1. Freeze a generator copy. Collect drafts with the D-029 sampler through its
-   observer hook (`sampling.monotone.monotone_unmask(..., observer=...)`): per
-   committed token, the commit call, the mask fraction, and float32 log c and log q
-   from the **same** forward pass. The observer receives the aligned float32 logits
-   before the commit, and its return value is ignored.
+**Then, after milestone 7:** the multi-seed grid and paper analysis (milestone 8),
+using the milestone-6 call accounting. Keep all six Family A arms.
+
+**Historical note (superseded for “what to do next”):** older handoff text described
+collecting drafts with the D-029 sampler observer hook
+(`sampling.monotone.monotone_unmask(..., observer=...)`): per committed token, the
+commit call, the mask fraction, and float32 log c and log q from the **same**
+forward pass. The observer receives the aligned float32 logits before the commit,
+and its return value is ignored. That work is complete (M4).
 2. Gate D observer checks: changing reference targets changes only analysis fields,
    never tokens or calls.
 3. Bank validation and hashes; separate validation and test banks.
@@ -178,7 +187,9 @@ calibration table (`verification.md`) is the input to that choice.
 | `training/lora.py` | `LoRALinear`, `apply_lora` (freezes the base), adapter state I/O |
 | `training/checkpoint.py` | Atomic checkpoint directories with `COMPLETE.json` hashes, `latest`, pruning, `copy_to_durable` (verified) |
 | `training/config.py`, `model_io.py`, `run.py`, `trainer.py` | Config defaults and resume-compatibility hash; model building and loading; `Trainer` (step, eval, save, resume, train loop) |
-| `sampling/monotone.py` | D-029 sampler: `reveal_schedule`, `allowed_token_mask`, `monotone_unmask` (observer, traces, call counts) |
+| `sampling/monotone.py` | D-029 sampler: `reveal_schedule`, `allowed_token_mask`, `monotone_unmask` (observer, traces, call counts; optional NFE meter) |
+| `sampling/nfe.py`, `candidates.py`, `state.py`, `proseco.py`, `d3im.py`, `extra_unmask.py` | D-049: NFE meter, ProSeCo-style correction sampler, D3IM, extra-unmask control |
+| `evaluation/call_budget.py` | Fixed-horizon generation on train/val; refuses test splits |
 | `evaluation/generation.py`, `calibrate.py` | Grouped generation plus checker scoring; validation-only calibration with traces |
 | `evaluation/benchmark.py`, `precision.py`, `compare.py` | Timing/memory pilot; bf16 vs. fp32 check; run-trajectory comparison |
 | `configs/train/*.yaml` | `warmup_pilot.yaml` (common warmup), `overfit32.yaml` (Gate C), `resume_check.yaml` (Gate C) |
@@ -188,7 +199,7 @@ calibration table (`verification.md`) is the input to that choice.
 | `scripts/tacc/` | Lonestar6 runbook scripts (`docs/warmup_continuation.md`): `tacc_env.sh` (shared settings and checks), `stage_transfer.sh` (Mac), `install_transfer.sh`, `setup_env.sh`, `backup_to_ranch.sh`, `env_check.slurm`, `pilot.slurm`, `continuation.slurm`, `final_eval.slurm`; Python helpers `preflight_checkpoint.py`, `cuda_fixture.py`, `check_expected_batches.py`, `compare_preflight.py`, `continuation_status.py`, `pilot_report.py`, `compare_calibrations.py`, `make_monitor_subset.py`; pilot-3592809 diagnostic (not a gate) `fixture_update_diagnostic.py`, `summarize_pilot_memory.py`, `fixture_diagnostic.slurm`; Linux lock `requirements-tacc-lock.txt` (`compile_lock.sh`) |
 | `paper/methods.md` | Methods draft from verified code |
 
-Tests (225 in total with MPS available; 224 inside the sandbox):
+Tests (300 passed in the milestone-6 software check, `.venv/bin/python -m pytest -q`):
 
 | File | Tests | Notes |
 | --- | --- | --- |
@@ -200,7 +211,8 @@ Tests (225 in total with MPS available; 224 inside the sandbox):
 | `test_data_format.py` | 48 | |
 | `test_data_structure.py` | 34 | hand-specified signatures, structure rejections, identity |
 | `test_data_splits.py` | 20 | includes 9 tamper tests with re-hashed manifests |
-| `test_masking.py`, `test_sampler.py`, `test_trainer.py`, `test_sampler_real.py` | 36 | milestone 3; `test_sampler_real.py` is `real_backbone` (8 such tests in total) |
+| `test_masking.py`, `test_sampler.py`, `test_trainer.py`, `test_sampler_real.py` | milestone 3 | `test_sampler_real.py` is `real_backbone` |
+| `test_m6_sampler.py` | 15 | D-049 NFE, ProSeCo-style sampler, D3IM, extra-unmask, repair |
 | `test_continuation.py`, `test_tacc_scripts.py` | 9 | D-033 trainer rules; resume guard and pilot report |
 
 68 tests carry the `tokenizer` marker.
@@ -214,7 +226,7 @@ hides MPS and blocks the Hub, so use full permissions for those commands.
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"   # pinned: requirements-lock.txt; no transformers (D-008)
 .venv/bin/dlmc download-backbone                              # -> runs/hf/open-dcoder-0.5B, sha256-verified
-.venv/bin/python -m pytest -q                                 # expect 225 passed (224 inside the sandbox: no MPS case)
+.venv/bin/python -m pytest -q                                 # milestone-6 check: 300 passed
 .venv/bin/python -m pytest -q -m "not real_backbone and not tokenizer"   # 149, no assets needed
 .venv/bin/dlmc doctor --backbone open-dcoder --device mps     # ~10 GB of memory
 .venv/bin/dlmc generate-data --config configs/data/pilot.yaml  # -> runs/data/pilot-seed20261116 (verifies itself)
@@ -268,9 +280,10 @@ T = L is the slowest evaluation: about 1.5 s per call for a batch of 50 with L =
 
 Details and tables are in `docs/verification.md`.
 
-**Tests.** `pytest`: 225 passed outside the sandbox. Inside it, 224 pass, because
-MPS is hidden and the MPS case is not collected. The milestone-3 mutation check
-catches 12/12 mutants and the D-033 check 7/7.
+**Tests.** Milestone-6 software check: `.venv/bin/python -m pytest -q` reported
+300 passed. An earlier milestone-3 count was 225 outside the sandbox and 224 inside
+it when MPS was hidden. The milestone-3 mutation check catches 12/12 mutants and
+the D-033 check 7/7.
 
 **Continuation preparation (details in `verification.md`, "Warmup-continuation
 preparation"; all on the Mac):**

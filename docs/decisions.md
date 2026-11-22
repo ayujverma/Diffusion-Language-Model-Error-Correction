@@ -651,3 +651,468 @@ continuation result.** Runbook: `docs/warmup_continuation.md`.
 - **Gates.** This replaces the measurement for those two per-tensor checks only. A fresh
   CUDA pilot against the new fixture is required for `PILOT_PASSED`. No pilot is marked
   passed by this entry.
+
+## Milestone 4: frozen generator and draft bank (2026-11-19)
+
+**D-037 (2026-11-19) Outcome of the CUDA pilot, the warmup continuation and the final
+validation comparison.** Recorded from the downloaded job records
+(`runs/tacc_results/job-3595133/`, not in Git) and the user's reports.
+- **Pilot.** Job 3593382 passed every D-033/D-036 gate (reported by the user; recorded in
+  the previous session).
+- **Continuation.** Job 3593457 resumed checkpoint 1000 and stopped at update 8712 on the
+  7,200 s training-time cap (reported by the user; the continuation logs are on TACC and
+  were not downloaded). In job 3595133, `continuation_status.py --best` applied the D-033
+  rule and selected `/work/10692/ayuj/ls6/dlmc/retained/warmup-pilot-v1-cont/checkpoints/
+  ckpt-0008000` (verified in `final-eval-3595133.out`).
+- **Final comparison.** Job 3595133 (exit 0:0, 00:21:13 as reported; commit
+  `9cf1a6eb8c67d7368eb844988c2d914bf2bddff0`, clean; torch 2.14.1+cu126; one A100 on node
+  c317-015) ran the full D-031 stage-2 protocol on the validation split (10 settings ×
+  200 problems, budgets 1, 2, 4, 8, L, batch 50). At T = L, checkpoint 1000 scored 857/2000
+  final answers; checkpoint 8000 scored 1812/2000 final answers, 1769/2000 whole traces and
+  0 malformed. Equal-weight final accuracy, checkpoint 1000 → 8000: T=1 0.206 → 0.520,
+  T=2 0.246 → 0.583, T=4 0.337 → 0.732, T=8 0.398 → 0.859, T=L 0.429 → 0.906 (recomputed
+  from `records.jsonl`). These are validation results, not test results. Two CUDA
+  caching-allocator retry warnings appear in the job's stderr; the job completed.
+
+**D-038 (2026-11-19) APPROVED: checkpoint 8000 is the frozen milestone-4 generator.**
+- **Approval.** The user approved checkpoint 8000 as the generator and asked that no
+  earlier checkpoint be substituted to obtain more errors.
+- **Identity (verified from the job-3595133 records).** Path
+  `/work/10692/ayuj/ls6/dlmc/retained/warmup-pilot-v1-cont/checkpoints/ckpt-0008000`; run
+  `warmup-pilot-v1-cont`, update 8000, full fine-tuning, fp32; model file sha256
+  `a5ceb4ffbf70ecc49e9fb48d7a0cdd01ccafa4ce81a6b2f91c73e0bd1b755341`. Trained on the pilot
+  train split: manifest `990ecd1d…1536`, split sha256 `215fdb4a…e18a`, selected problem IDs
+  sha256 `b9a59da9…9c64`, 18,000 problems. Base `fredzzp/open-dcoder-0.5B` at revision
+  `d0d86d5b99960c05258bb1f8265dd91564dbac67`; `tokenizer.json` sha256
+  `4f3ead5ffbb2abfb9e51757b104af5174f59c994ff3b2ca715d344dc66ee1f4e`. Its validation
+  records: `retained/final_eval/selected-ckpt-0008000-cuda/records.jsonl`, sha256
+  `9f332bbcaedf1075c4dbf19be304806453e5a38d98664193ca864330f3c6d8e7` (local copy).
+- **Pending remote verification.** The `COMPLETE.json` hash, the optimizer, RNG and
+  `state.json` hashes, the configuration hash, the source revision recorded at save time
+  and the selection/timer state are on TACC only. `scripts/tacc/generator_identity.py`
+  re-hashes every file against `COMPLETE.json`, checks the pinned model hash, update and
+  evaluation-record hash, and writes `retained/generator/ckpt-0008000.identity.json`. The
+  collection job refuses to start unless the files still match that record.
+- **Preservation.** Checkpoint 1000 (transfer copy and Ranch backup) and every
+  continuation output stay as they are. Checkpoint 8000 is read-only input. Its Ranch
+  backup (`backup_to_ranch.sh ckpt8000`) has **not** been made; the checkpoint-1000
+  backup does not cover it.
+
+**D-039 (2026-11-19) Milestone-4 bank collection protocol. The protocol is fixed; the
+scope is PENDING USER APPROVAL.** Code: `src/diffusion_correction/drafts/`; runbook:
+`docs/milestone4_bank.md`.
+- **No approved scope existed.** Neither the build prompt nor D-000–D-038 fixes which
+  problems, settings or budgets the bank holds. Two configs are prepared; the user picks
+  one (or another) and a later entry records it. Nothing has been collected.
+  - *Recommended (`configs/bank/m4_ckpt8000_v1.yaml`):* every train problem (18,000; all 18
+    settings) and every validation problem (3,600), budgets 1, 2, 4, 8, L: 108,000 drafts,
+    756,000 example-calls, 15,120 batched forwards, 2.16 M token records.
+  - *Alternative (`configs/bank/m4_ckpt8000_stage2_v1.yaml`):* the 10 stage-2 settings
+    only: 60,000 drafts, 384,000 example-calls, 7,680 batched forwards, 1.02 M tokens.
+- **Fixed regardless of scope.**
+  - *Splits.* Train drafts form the training bank; validation drafts are stored in the
+    same bank directory under their own `split` and shards and are never mixed into
+    training. Test splits are never loaded (`load_bank_config` and `load_verified_examples`
+    refuse them). The dataset is not regenerated; within a configured setting every
+    problem is collected and nothing is filtered by outcome.
+  - *Generator and sampler.* Checkpoint 8000 (D-038), the unchanged D-029 sampler, one
+    greedy draft per problem and budget. No random numbers are consumed (CPU and CUDA RNG
+    states are checked unchanged per batch), so there is no seed. Budgets T ∈ {1, 2, 4, 8, L};
+    T > L would be infeasible and is listed, not run (none is, since L ≥ 10).
+  - *Batching and precision.* Batch 50 in file order within a setting (identical to job
+    3595133's batches on validation); fp32, TF32 off, matmul precision "highest"; one A100
+    on a full `gpu-a100` node (D-035), torch 2.14.1+cu126 (D-034), the existing environment.
+  - *Order and shards.* Validation first, then train; within a split by budget, then
+    setting, then part (200 problems per validation shard, 250 per train shard). The plan
+    (every shard's ordered problem IDs) is hashed; the bank identity pins the config, plan,
+    generator model and `COMPLETE.json` hashes, tokenizer, data manifest, code commit (clean
+    tree required on CUDA), torch, CUDA runtime, device type, precision, lock and batch size.
+- **Primary correction-comparison budget: still unselected.** Collecting several budgets
+  does not choose it.
+
+**D-040 (2026-11-19) Generation-time signals, record schema and the collection checks.**
+- **Signals, from the commitment forward pass.** The sampler passes a read-only observer
+  the cloned pre-commit state and the detached aligned logits after it has fixed the
+  commits of that call. The observer recomputes the sampler's exact row tensor
+  (`logits[editable & masked].float()`) and `log_softmax`, and stores per committed token:
+  `log_c_gen` (committed token) and `log_q_gen` (reference target), both float32 over the
+  **full output vocabulary** at temperature 1; `raw_max_log_prob`; the commit call,
+  per-example commit order and the global mask fraction before the call (no blocks exist,
+  so there is no separate active-block fraction). The sampler's own ranking score is
+  stored as `rank_score` and must equal `log_c_gen` bitwise; the restricted-policy log
+  probability (renormalized over the allowed set) is stored separately as
+  `policy_log_prob`. Floats are float32 values written exactly as JSON doubles.
+- **Target isolation.** References reach only the observer and the checker; the
+  observer's return value is ignored. Records split target-independent fields
+  (`generation`) from target-dependent ones (`analysis`: reference, `log_q_gen`, checker
+  labels).
+- **Startup gates in the full job (no separate trial job).** On four 50-problem batches
+  (val arithmetic:4:2 at L, val programs:6:3 at 4, val arithmetic:2:1 at 1, train
+  programs:4:2 at 8): Gate D (true vs permuted references vs no observer: identical
+  `generation`, calls and sampler scores; target-dependent fields must change, and
+  `log_q` must not change where the target did not); exact same-forward recompute of saved
+  pre-commit states; an independent single-example raw forward with a manual shift within
+  2e-3 in log probability (D-004's < 1e-3 batch-vs-alone logit bound, doubled for the
+  log-normalizer); exact reproduction of job 3595133's drafts for the validation batches;
+  record invariants; unchanged RNG. A failure stops the job before any shard is written;
+  tolerances are not loosened and nothing is retried without a new entry.
+- **Storage and validation.** JSONL shards written atomically with sidecar hashes;
+  resume only with an identical identity, never rewriting a verified shard, moving partial
+  files aside and stopping on corruption. Finalization re-checks every record against the
+  dataset (schema, schedule, signal identities `log_c == log_q` on correct tokens and
+  `c + q ≤ 1` on wrong ones, checker labels), detects missing, duplicate and unexpected
+  records, checks split separation and counts, and writes `MANIFEST.json` and
+  `BANK_COMPLETE`. Whole-bank agreement with the 3595133 records is reported (not gated).
+- **Derived diagnostics (separately runnable; never alter the bank).** Step-0 correction
+  signals with the corrector at initialization (= checkpoint 8000) given the full draft,
+  signal diagnostics, and a verified examples report.
+
+**D-041 (2026-11-19) Milestone-4 bank scope: the recommended full scope is approved.**
+Supersedes the "pending" scope status in D-039; the protocol in D-039 and D-040 is unchanged.
+- The user chose `configs/bank/m4_ckpt8000_v1.yaml` (bank `m4-ckpt8000-v1`): all 18,000 train
+  and 3,600 validation problems (all 18 settings), budgets 1, 2, 4, 8, L, one greedy draft per
+  problem and budget: 108,000 drafts, 756,000 example-calls, 15,120 batched forwards.
+- The stage-2 config is not approved and is not to be submitted.
+- Only the header comments of the two config files changed; the bank identity hashes the
+  parsed config, so `config_sha256` and `plan_sha256` are unaffected.
+- The primary correction-comparison budget remains unselected. Collection has not run.
+
+**D-042 (2026-11-19) Clarification: the D-029 sampler ranks by float32 raw LOG probability.**
+Does not change generation, ranking, candidate choice or any prior result (including job 3595133).
+- **Ambiguity.** D-029
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+'
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+ \
+
+**D-043 (2026-11-20) Milestone-4 draft bank completed on Lonestar6 (job 3597054).**
+Supersedes the "collection has not run" lines of D-039/D-041 for this bank name.
+- Bank `m4-ckpt8000-v1` from checkpoint 8000 (D-038), full scope (D-041), protocol D-039/D-040/D-042.
+- Job `3597054` (`bank_collect.slurm`): collection_complete at 2026-11-20T01:25:24Z;
+  `BANK_COMPLETE` with `manifest_sha256` `c5901617bbc6467483d1a91d8679c881dc055d62bbe993aa03fe181092e71ac4`;
+  `identity_sha256` `e3e810bef987753ebdb8c9cf002de0f113eb9c4e5c61843094893ca5b22203ea`;
+  `plan_sha256` `ed18b8a9a91148d7f390c1476c2c033a76ffd50709c518c6c63c424619bae3f4`.
+- Validation passed (`n_problems` 0): 108,000 drafts, 15,120 batched forwards, 756,000
+  example-model calls, 2,160,000 tokens; `rank_score_mismatches` 0; `rng_changed_shards` 0;
+  `model_seconds_with_signals` 5341; final_correct 73,048; trace_correct 70,047;
+  wrong_tokens 126,265; malformed_drafts 118.
+- Reproduction vs job-3595133 generator validation records: 10,000 compared, 10,000 identical.
+- Step-0 signals, diagnostics, and the verified examples report completed in the same job.
+- Local Mac checks on downloaded metadata and a shard subset (val b4, val bL, train b8
+  programs:4:2; 8,200 records): sidecar hashes matched; record invariants passed; report
+  line_sha256 matched overlapping examples. Full local `--verify` of every shard optional.
+- The primary correction-comparison budget remains unselected. Milestone 5 not started.
+- Ranch backup of the finished bank: confirm with the user if `BACKUP VERIFIED` was printed;
+  do not claim it here without that evidence.
+
+## Milestone 5: shared-bank correction screen (2026-11-20)
+
+**D-044 (2026-11-20) Milestone-5 screen protocol: primary budget, λ/μ/β, scale.
+Recorded from bank diagnostics before any correction arm was trained.**
+Supersedes the "primary budget unselected" lines of D-031/D-039/D-041/D-043 for the
+first shared-bank screen. Does not change the bank, the generator, or D-011's bin edges.
+- **Primary comparison budget: T = 4.** Chosen from `m4-ckpt8000-v1` diagnostics (job
+  3597054): validation final-answer accuracy ≈ 0.653 at T=4 (inside the 40–85%
+  heuristic band), with 3,555 wrong tokens / 1,248 wrong finals on val and 13,453 wrong
+  tokens on train — enough errors for ranking without T=1's single-stage collapse or
+  T=8/L's near-ceiling scarcity. Held-out repair evaluation uses **all validation drafts
+  at budget 4** (3,600), identical across arms.
+- **Training bank filter:** all **train** drafts at **all budgets** {1,2,4,8,L}
+  (90,000 drafts). Ranking groups remain (budget code, stage bin) per D-011. Arms share
+  identical example IDs and minibatch sampler seed.
+- **Objective coefficients (logged initials):** λ = 1.0, μ = 1.0 (closes the "not yet
+  chosen" status of D-012 for this screen; a later validation sweep may supersede).
+- **Rank weights:** β = 0.5 and stage edges (0.2, 0.4, 0.6, 0.8) as in D-011 (no longer
+  provisional for this screen). β = 0 must match uniform (tested).
+- **Arms:** uniform, high_conf, gen_difficulty (−log q), current_loss, plus low_conf and
+  shuffled_conf. Configs `configs/correction/m5_*.yaml` share every non-weight setting;
+  only `run_name` and `weighting.rule` differ. All start from ckpt-0008000 (D-038).
+- **Screen scale:** 1,000 updates, one seed (`20261120`), batch 32, same AdamW/schedule/
+  fp32 full fine-tuning as D-030. Three seeds deferred to the main grid (milestone 8).
+  No separate pilot/trial job. Slurm array of six arms on `gpu-a100` (D-035); resume with
+  `DLMC_CORR_RESUME=1` only; no identity-changing auto-retries.
+- **Repair:** one forward on the complete saved draft; greedy re-prediction of every
+  editable position (allowed set). Report repair_rate = n_repaired / n_wrong_before and
+  damage_rate = n_damaged / n_correct_before (rates None if denom = 0). Full correction
+  samplers remain milestone 6 (D-022).
+- **Bank pins:** identity `e3e810be…03ea`, manifest `c5901617…1ac4`. Mismatched identity
+  or incomplete bank is refused.
+- **Status at entry time:** software IMPLEMENTED / TESTED LOCALLY only. No TACC correction
+  job has run; do not mark EXPERIMENT COMPLETED until artifacts are verified.
+  (Superseded for completion status by D-047; batch size superseded by D-045.)
+
+**D-045 (2026-11-20) Correction-screen physical batch 16 on A100 40GB (engineering).**
+Does not change D-044 science (arms, λ/μ/β, budget, 1000 updates, seed).
+- **Observed.** Array job 3600168 (arm uniform) hit `torch.OutOfMemoryError` during the
+  second (draft) forward of `train_step` at batch 32: ~33.6 GiB allocated of 39.5 GiB,
+  failed +2.52 GiB. Cause: two fp32 forwards with grad per update (L_mask + correction)
+  plus full AdamW; warmup/collection used one forward or `no_grad`.
+- **Change.** Train and eval `batch_size` for the M5 screen configs and
+  `correction_screen.slurm` default to **16** (override `DLMC_CORR_BATCH`). Same for every
+  arm. If 16 still OOMs, drop to 8 with the same override; do not change only one arm.
+
+## Milestone 7 proposal: ProSeCo + generation-confidence weighting (2026-11-20)
+
+**D-046 (2026-11-20) Proposed Family-B arm `proseco_gen_conf` (train-time); eval
+call budgets; does not change Family A.**
+
+- **Motivation.** The user wants to improve ProSeCo by using generation-confidence
+  probabilities at **train time**, not only to study fixed-bank weighting (Family A,
+  milestone 5). Family A remains the shared-bank control. This entry defines a
+  **separate** ProSeCo-adapted variant for milestone 7.
+- **Where.** Implement only in **milestone 7**, after `proseco_basic` and
+  `proseco_error_prioritized` adapters work and their stop-gradient fixtures pass.
+  Milestone 6 builds the **samplers and NFE/call accounting** used to evaluate every
+  family under matched budgets; it does not train this arm.
+- **Inference call budget (all families).** ProSeCo's published sampler uses a fixed
+  correction schedule (corrector every ω unmask steps, up to S fixed-point argmax
+  iterations; each iteration is one NFE). For the project's primary metric, **every**
+  method—including Family A checkpoints and all ProSeCo/SCOPE variants—is compared at
+  a **validation-selected fixed model-call (NFE) budget** (handoff). Family A training
+  itself stays shared-bank (`L_mask + λ L_error + μ L_keep`); the fixed correction-pass
+  budget is an **evaluation/sampling** contract from milestone 6 onward, not a change
+  to the M5 trainer. Milestone 5's one-forward greedy repair remains a screen metric
+  only.
+- **Draft construction (unchanged from ProSeCo).** On each step, sample `z_t` from the
+  true response; first forward `x_θ(z_t)`; discrete draft
+  `ŷ = sg(argmax x_θ(z_t))` (Q-4 resolves visible vs all positions for Open-dCoder).
+  Generation confidence for weighting uses the **same** draft-construction forward:
+  \[
+  \log \hat{c}_i = \mathrm{sg}\big(\log \mathrm{softmax}(x_θ(z_t))_{i,\,\hat{y}_i}\big)
+  \]
+  i.e. stop-grad log-probability of the **committed draft token** (not of the correct
+  target, not max-over-vocab unless they coincide). Never recompute \(\hat{c}\) from
+  the corrector forward or from the frozen bank.
+- **Proposed corrector loss.** Let \(E\) / \(K\) be editable positions where
+  \(\hat{y}_i \neq x^\star_i\) / \(\hat{y}_i = x^\star_i\). Let \(\ell_i = -\log p_θ(x^\star_i\mid\hat{y})\)
+  from the **second** (gradient) forward on the draft. Let \(w_i\) be D-011 rank
+  weights on \(\{\log\hat{c}_j:j\in E\}\) within the same (budget, stage-bin) groups
+  as Family A, with provisional \(\beta=0.5\), **no gradient through \(w\)**. Time
+  weight \(a(t)\) matches the ProSeCo-adapted MDM/corrector schedule chosen in the
+  adapter (published: \(\dot\alpha_t/(1-\alpha_t)\); code often \(1/t\)). Then
+  \[
+  \mathcal{L}_{\mathrm{corr}}^{\mathrm{gen\_conf}}
+  = a(t)\left(
+      \frac{1}{|E|}\sum_{i\in E} w_i\,\ell_i
+      + \frac{1}{|K|}\sum_{i\in K} \ell_i
+    \right)
+  \]
+  with the usual graph-connected zero if \(E\) or \(K\) is empty. The MDM term on
+  `z_t` stays as in the ProSeCo basic adapter. **Default proposed rule ranks
+  \(\log\hat{c}\) upward on errors** (high generation confidence on a wrong commit
+  gets larger \(w\)); low/shuffled ablations are optional diagnostics, not required
+  grid arms.
+- **Relation to ProSeCo Eq. 11 (error-prioritized).** Published error-prioritized uses
+  \(-\log p_θ(x^\star)\) on wrong positions and \(-\,p_θ(x^\star)\) (probability, not
+  CE) on already-correct positions. `proseco_gen_conf` does **not** replace Eq. 11; it
+  keeps CE on both \(E\) and \(K\) and only reweights \(E\) by \(\hat{c}\). The three
+  names stay distinct: `proseco_basic`, `proseco_error_prioritized`, `proseco_gen_conf`.
+- **Gradient / learning check (honest).**
+  - Because \(w=\mathrm{sg}(w(\log\hat{c}))\) and \(\hat{y}=\mathrm{sg}(\mathrm{argmax}\,\cdot)\),
+    the first forward's discrete choices and the ranks do not receive gradient.
+  - On an error token, \(\partial\mathcal{L}/\partial\theta\) scales the usual CE
+    gradient by \(w_i\): same direction (toward \(x^\star_i\)), larger magnitude when
+    \(w_i>1\). This **rebalances which mistakes dominate the batch**, it does not
+    invent a new local optimum condition per token.
+  - On correct tokens, CE gradients are unweighted (mean over \(K\)); this differs
+    from Eq. 11's \(-\,p\) term, whose gradient on an already-correct position is not
+    the same as CE.
+  - **Does this necessarily help?** No. Family A (fixed bank, analogous rank weights
+    on saved \(\log c\)) did **not** show high-\(c\) weighting beating uniform on the
+    M5 screen. Online ProSeCo may still differ because \(\hat{c}\) tracks the current
+    model and drafts are on-policy. The arm is justified as a **direct test** of the
+    “improve ProSeCo with generation confidence” idea, not as a guaranteed gain.
+  - **Failure modes to watch:** \(\hat{c}\) saturated near 1 on many errors (weights
+    collapse); stop-grad/argmax mismatch with Q-4; accidentally weighting by
+    \(p(x^\star)\) or corrector-forward probs (forbidden by this entry).
+- **Eval.** Same milestone-6 call-budget protocol as other Family B arms; report
+  final-answer accuracy and NFE. Do not treat M5 greedy repair as the ProSeCo
+  comparison metric.
+- **Unchanged.** Family A six-arm shared-bank training and its M5 screen conclusions;
+  SCOPE + D3IM still a separate prior-method arm; no identity-changing retry of M5.
+
+**D-047 (2026-11-20) Milestone-5 shared-bank screen EXPERIMENT COMPLETED (artifacts).**
+Does not change D-044/D-045 science settings. Recorded from downloaded
+`runs/tacc_results/correction/` (not in Git) and TACC job records reported by the user.
+- **Training.** Job `3600435` array tasks 0–4 COMPLETED 0:0 (~24–28 min) for arms
+  uniform, high_conf, gen_difficulty, current_loss, low_conf. Task 5 (`shuffled_conf`)
+  FAILED at startup (multiline `squeue` EndTime; see D-048). Resubmit job `3600756`
+  COMPLETED 0:0 for shuffled_conf. All six arms reached update 1000 / `max_updates`
+  from init `ckpt-0008000` on bank `m4-ckpt8000-v1` (D-043), seed 20261120, batch 16
+  (D-045), λ=μ=1, β=0.5, primary repair budget T=4 (D-044).
+- **Dedicated repair.** Job `3600803` array 0–5 COMPLETED 0:0 (~1.5–3.5 min/arm).
+  Each wrote `retained/correction/repair/m5-<arm>-v1/{summary.json,records.jsonl}`
+  on `ckpt-0001000`, val@T=4, 3600 drafts. Aggregates **match** each arm's in-screen
+  `last_eval.repair` at update 1000 bit-for-bit on repair_rate, damage_rate, and
+  n_wrong_after.
+- **Shared eval identity.** All arms: n_wrong_before=3555, n_correct_before=68445,
+  draft_ids_sha256 `b8420264…c61b`. @0 repair identical across arms (repair_rate
+  ≈0.1381, damage_rate ≈0.0515, wrong_after=6589).
+- **Final ranking by n_wrong_after (lower better):** low_conf 3175 (net −380) ≈
+  uniform 3180 (−375) > high_conf 3314 > shuffled_conf 3367 > gen_difficulty 3483 >
+  current_loss 3571 (net +16). High gen-time confidence weighting did **not** beat
+  uniform on this screen; correction training itself improved sharply vs @0.
+- **Label.** EXPERIMENT COMPLETED for the M5 screen and dedicated repair on these
+  jobs/artifacts only. Not a test-split result; not a ProSeCo comparison; not a
+  multi-seed main-grid claim.
+
+**D-048 (2026-11-20) Slurm array EndTime: take one line before `date -d`.**
+- **Observed.** Job `3600435_5` failed: `squeue -h -j "$SLURM_JOB_ID" -o %e` returned
+  six EndTime lines (one per array task) when `SLURM_JOB_ID` names the array parent;
+  `date -d` rejected the multiline string.
+- **Change.** In `correction_screen.slurm`, `bank_collect.slurm`, and
+  `continuation.slurm`, set
+  `END=$(squeue -h -j "$SLURM_JOB_ID" -o %e | sort -u | head -n 1)` and refuse an
+  empty END. Prefer identical EndTimes; if they differ, the earliest unique line after
+  sort is used (conservative stop margin). Does not change science settings.
+
+## Milestone 6: samplers and call-budget accounting (2026-11-20)
+
+**D-049 (2026-11-20) Inference samplers, NFE, and call budgets. This is the
+milestone-6 contract. Does not train Family B and does not retrain Family A.**
+
+- **Scope.** This entry freezes the milestone-6 inference contract. It does not
+  implement `proseco_basic`, `proseco_error_prioritized`, `proseco_gen_conf` (D-046),
+  or SCOPE training. Those stay milestone 7. Family A's six checkpoints stay as they
+  are and are only consumers of this harness. Q-4 (corrector input at train time),
+  Q-5 (SCOPE training confidence), and Q-6 (ReMDM's schedule and σ_t) stay open.
+- **One NFE.** One NFE is one successful call to `DiffusionAdapter.aligned_logits`.
+  `sampling/nfe.py::ForwardMeter.forward` checks the cap and then calls the adapter,
+  so a sampler cannot spend a forward without recording it. A call that would exceed
+  `max_calls` does not run the model and returns None. Kinds are `predictor`,
+  `corrector`, `d3im`, and `revision`. A batched forward charges every example in the
+  batch, as in D-029. Prompt and padding stay immutable. The allowed-token mask is
+  the D-029 mask. Targets, error masks, and the checker never enter a sampler.
+- **Budgets.** The harness interface is a per-example cap `max_calls`. Each cap is
+  its own horizon. A prefix of a longer run is not the result at a shorter cap,
+  because reveal quotas and D3IM keep-counts depend on the planned horizon. No
+  primary budget is selected here. `dlmc evaluate-calls` and `dlmc evaluate-repair`
+  accept `train` (wiring) and `val` only and refuse `test_id`, `test_long`, and
+  `test_unseen`.
+- **Monotone (D-029, unchanged schedule).** `monotone_unmask` still runs exactly T
+  forwards and still finishes with no mask. An optional meter records those forwards
+  as `predictor`. If the meter refuses one, that is an error, not an early stop.
+  Under a cap B the harness sets T = min(B, L) and reports B − T unused. It does not
+  add no-op calls when B > L (D-027).
+- **ProSeCo-style correction sampler** (`sampling/proseco.py`). An adaptation of
+  `llada/generate.py` at ProSeCo `43ce881`, not a numerical reproduction and not
+  Family A. Provisional defaults, from that file, until a validation sweep: ω = 2
+  (`apply_corrector_every_n_steps`) and S = 4 (`max_corrector_steps_per_loop`).
+  Differences from the upstream sampler, all deliberate:
+  1. Logits are aligned (D-005). Argmax is over the allowed set, smallest id on ties.
+     Upstream argmax is unrestricted.
+  2. Greedy only. No Gumbel noise and no random remasking.
+  3. One block, the whole response. No EOS early stop (D-018: an EOS in the response
+     is malformed). Semi-autoregressive blocks are not implemented for this sampler.
+  4. Unmask quotas are D-029 `reveal_schedule` (ceil), so S = 0 matches monotone
+     unmasking at T = min(B, L). Upstream `get_num_transfer_tokens` puts the
+     remainder on the first steps instead. Ranking is the D-029 float32 full-vocabulary
+     log-probability of the allowed argmax, not upstream's float64 softmax probability.
+  5. On step s (1-based), if s is a multiple of ω and S > 0, the corrector runs.
+     Its input is a temporary complete draft: masked editable positions are filled
+     with the predictor's allowed argmax, and already visible tokens stay. The
+     corrector then rewrites every editable position. A match stops the loop; that
+     forward still counts. Already-visible main-state tokens are then replaced by
+     the corrected tokens. Masks in the main state stay masks until the step's
+     unmask commit, which uses the last completed logits and is not an extra NFE.
+- **Call plan for the correction sampler.** Let W(t) = t + S·⌊t/ω⌋. The number of
+  unmask steps is the largest t in 1..L with W(t) ≤ B, or one step that reveals
+  every token when no such t exists (the corrector loop stops when the next forward
+  would exceed B). A finished run with B ≥ 1 has no mask left. Early fixed points
+  are not backfilled: `calls_used` may be less than B, and the difference is
+  reported. Stopping inside a corrector loop skips iterations that do not fit; it
+  does not roll back forwards that already ran.
+- **Complete-draft repair.** `repair_drafts` stays the milestone-5 one-forward
+  greedy screen (D-022, D-044). `repair_drafts_proseco` repeats that same greedy
+  rewrite (`_greedy_response`) for up to `max_calls` iterations (default S = 4).
+  `max_calls = 1` matches `repair_drafts` token for token. The batch stops when
+  every draft is unchanged and does not backfill. Every draft in a batch is charged
+  that batch's forward count. `dlmc evaluate-repair --method greedy` is the default
+  and does not change the milestone-5 records. `--method proseco` is the new path.
+- **D3IM** (`sampling/d3im.py`). Adapted from source_audit §3.2, not from a local
+  SCOPE code drop (none is pinned). Each step is one `d3im` NFE. The candidate is
+  the allowed argmax; its confidence is that candidate's float32 full-vocabulary
+  softmax probability (ties: smallest position). This can tie distinct log-probs
+  under float32 exp. Keep K positions in the active block and remask the rest,
+  including tokens that were already visible. K = ⌊L_block · t / T⌋ before the
+  block's last step, and the whole block on the last step. K = 0 remasks the block
+  and still counts. Default is one block (the response). Optional `block_length`
+  freezes earlier blocks; the horizon must be divisible by the number of blocks.
+  EOS/pad/mask are excluded by the allowed mask, which stands in for the paper's
+  "EOS confidence = −∞" on a format that has no EOS. A finished horizon has no mask.
+- **Extra-unmask control** (`sampling/extra_unmask.py`). Not ReMDM. Q-6 stays open.
+  The CDLM threshold decoder is not implemented. This control spends exactly B
+  forwards: monotone unmasking for min(B, L) calls, then one revision per leftover
+  call. A revision replaces the editable position whose current token has the lowest
+  float32 full-vocabulary log-probability (ties: smallest index) with the greedy
+  allowed candidate from that same forward. It does not remask. A call whose
+  replacement equals the current token still counts. D3IM scores the new candidate
+  and can remask; this control scores the token that is already written.
+- **Timing.** The harness records synchronized model seconds and wall seconds around
+  each batch (D-032 cache release after the batch). These are the milestone-8 cost
+  hooks. No TACC call-budget job has been run. Do not mark EXPERIMENT COMPLETED
+  from this entry.
+
+**D-050 (2026-11-21) The backbone stays Open-dCoder. Milestone 6 is a software gate
+for starting milestone 7, not a certificate that ProSeCo or SCOPE match their papers.**
+Does not change D-000, D-046, or D-049.
+- **Why not LLaDA.** The approved protocol names Open-dCoder-0.5B as the backbone
+  and builds the question on drafts from that warmed model. ProSeCo's released
+  sampler loads LLaDA-8B (`llada/generate.py` at the pinned commit: `GSAI-ML/LLaDA-8B-Instruct`).
+  Moving the project onto LLaDA would replace the tokenizer, the logit shift, the
+  warmup, the bank, and Family A. A second backbone is an optional extension in the
+  build prompt, not part of the main grid.
+- **What the Family B comparison is.** ProSeCo, SCOPE, and `proseco_gen_conf` are
+  trained and decoded on this same Open-dCoder checkpoint. That compares procedures
+  on one model. It does not reproduce the papers' published scores. LLaDA has
+  copy-over, so a visible token's prediction is that token. Open-dCoder does not, so
+  the same visible token can be predicted as something else. That is why Q-4 is still
+  open for ProSeCo training.
+- **SCOPE's model.** D3IM is the sampler in the SCOPE paper's appendix, not a third
+  backbone. The milestone-1 audit read SCOPE's algorithms and found no code
+  repository. It does not record SCOPE as a LLaDA method. Our D3IM path is the
+  D-049 adaptation on Open-dCoder.
+- **Milestone 6 status.** The D-049 samplers and `dlmc evaluate-calls` are
+  IMPLEMENTED and TESTED LOCALLY (tiny backbone; suite 300 passed at that check).
+  No Open-dCoder call-budget job has been run. The tests check call counts and
+  token-state rules. They do not check numerical agreement with LLaDA or SCOPE.
+- **Starting milestone 7.** The harness is ready, so milestone 7 can start. The first
+  acts are written decisions for Q-4 and Q-5, then `proseco_basic` stop-gradient
+  fixtures, then the other Family B trainers including `proseco_gen_conf` (D-046).
+  Q-6 (ReMDM) stays an inference follow-up. Do not treat milestone 6 as proof that
+  those trainers are faithful.

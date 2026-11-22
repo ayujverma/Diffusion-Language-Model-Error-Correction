@@ -122,33 +122,67 @@ from one warmup checkpoint hash, consume identical bank/example IDs, and use the
 same λ/μ, optimizer, and minibatch sampler. Held-out repair evaluation. This needs
 minimal complete-draft repair support (one repair call on a saved complete draft),
 which is built here; the full correction samplers stay in milestone 6 (D-022).
+All six Family A arms remain in the project for later matched-budget eval (user
+decision 2026-11-20). Milestone 5 does **not** train ProSeCo.
 
-## Milestone 6: correction samplers and full-generation evaluation
+## Milestone 6: correction samplers and full-generation evaluation (software DONE 2026-11-20)
 
-ProSeCo-style correction sampler, repair-of-complete-draft mode, D3IM, call
-accounting. Compute-matched ordinary MFT and extra-unmasking / ReMDM inference
-controls. Timing harness.
+**Samplers and measurement only. No prior-method training. TESTED LOCALLY. Not an
+experiment: no TACC call-budget job has been run, and no primary budget is selected.**
+Contract: D-049.
 
-## Milestone 7: prior-method adapters
+- [x] NFE meter (`sampling/nfe.py`): one forward is one NFE; a call past the cap does not run
+- [x] ProSeCo-style correction sampler (`sampling/proseco.py`): ω = 2, S = 4 provisional;
+      temporary complete draft vs main masked state; S = 0 matches D-029. TESTED LOCALLY
+- [x] Repair of a complete draft via that corrector (`repair_drafts_proseco`); M5
+      `repair_drafts` kept. TESTED LOCALLY
+- [x] D3IM inference (`sampling/d3im.py`), including optional frozen blocks. TESTED LOCALLY
+- [x] Extra-unmask control (`sampling/extra_unmask.py`): spends a matched budget on
+      monotone unmasking plus current-token revisions. **Not ReMDM** (Q-6 still open).
+      The CDLM threshold decoder is not implemented. TESTED LOCALLY
+- [x] Call-budget harness (`evaluation/call_budget.py`, `dlmc evaluate-calls`):
+      independent horizons, val/train only, model seconds and wall seconds. TESTED LOCALLY
+- [x] Config `configs/eval/m6_sampler.yaml` and user-submitted stub
+      `scripts/tacc/call_budget_eval.slurm` (not run)
 
-ProSeCo (basic and error-prioritized, distinct names) and SCOPE + D3IM, each with
-fixtures that show supervised positions and gradient paths (resolve Q-4, Q-5).
+Family A checkpoints are consumers of this harness (the stub loads `ckpt-0001000`
+from a chosen `m5-*-v1` run). Their training recipe stays the shared-bank objective.
+No primary call budget has been selected. D-050: this milestone is the software gate
+for milestone 7. It is not a numerical match to LLaDA or to SCOPE.
+
+## Milestone 7: prior-method adapters (Family B)
+
+Train/adapt prior methods on Open-dCoder (not on LLaDA) and our tasks. First record
+Q-4 and Q-5, then fixtures for supervised positions and stop-gradient paths. D-050.
+
+1. `proseco_basic` — ProSeCo Algorithm 1 corrector (all-position CE), adapted.
+2. `proseco_error_prioritized` — appendix Eq. 11 variant; **distinct name**.
+3. **`proseco_gen_conf` (D-046)** — same online draft construction as ProSeCo, but
+   the corrector CE on error positions is rank-weighted by stop-grad generation
+   confidence \(\log\hat{c}\) of the committed draft token from the
+   draft-construction forward (train-time option 1). Not a Family A arm; not an
+   exact reproduction of Eq. 11.
+4. SCOPE + D3IM, adapted.
+
+Evaluate all of the above (and Family A's six arms) with the milestone-6 sampler /
+call-budget protocol.
 
 ## Milestone 8 onward: cost estimate, main grid, analysis, paper
 
 Measured per-step and per-example timing, then a total-cost extrapolation before
-launching any grid. Three seeds for the main comparisons, transfer tests,
-sampler-dependence runs, bootstrap-by-problem statistics, and a report generated
-from raw records.
+launching any grid. Three seeds for the main comparisons (Family A six arms +
+Family B including `proseco_gen_conf`), transfer tests, sampler-dependence runs,
+bootstrap-by-problem statistics, and a report generated from raw records.
 
 ## How to resume in a new session
 
 1. Read this file, then `docs/decisions.md`, `docs/verification.md`, and
    `docs/source_audit.md` §5 (open questions).
 2. Recreate the environments and assets with the README "Setup" commands, then run
-   `.venv/bin/python -m pytest -q`. All 225 tests should pass. The 8
-   `real_backbone` tests need the weights and the 68 `tokenizer` tests need the
-   tokenizer files. Inside a sandbox that hides MPS, the MPS case is not collected
-   (224).
-3. Start at the first pending item: currently the TACC warmup continuation
-   (`docs/warmup_continuation.md` §4), then milestone 4.
+`.venv/bin/python -m pytest -q`. As of the milestone-6 software check, 300 passed.
+The `real_backbone` tests need the weights and the `tokenizer` tests need the
+tokenizer files.
+3. Start milestone 7 by writing Q-4 and Q-5, then the Family B trainers on
+   Open-dCoder (`proseco_basic`, then `proseco_error_prioritized`, then
+   `proseco_gen_conf` per D-046, and SCOPE). The milestone-6 harness is ready
+   (D-050). It does not certify that those methods match the papers.
