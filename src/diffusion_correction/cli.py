@@ -3,7 +3,8 @@
 Commands: ``doctor``, ``download-backbone`` (milestone 1); ``generate-data``,
 ``verify-data``, ``inspect-example`` (milestone 2); ``train``, ``benchmark``,
 ``precision-check``, ``calibrate``, ``compare-runs`` (milestone 3); bank commands
-(milestone 4); ``train-correction``, ``evaluate-repair`` (milestone 5).
+(milestone 4); ``train-correction``, ``evaluate-repair`` (milestone 5);
+``evaluate-calls`` (milestone 6).
 """
 
 from __future__ import annotations
@@ -413,11 +414,13 @@ def cmd_train_correction(args: argparse.Namespace) -> int:
 
 
 def cmd_evaluate_repair(args: argparse.Namespace) -> int:
-    from .evaluation.repair import make_allowed_for_adapter, repair_drafts, summarize_repair
+    from .evaluation.repair import make_allowed_for_adapter, repair_drafts, repair_drafts_proseco, summarize_repair
     from .training.bank_data import load_bank_drafts
     from .training.model_io import load_trained_adapter
     from .training.run import sampler_allowed, task_format
 
+    if args.split not in ("train", "val"):
+        raise SystemExit(f"repair never evaluates {args.split!r}; use val (or train for wiring checks)")
     device = resolve_device(args.device)
     drafts, ident = load_bank_drafts(
         args.bank_dir, identity_sha256=args.identity_sha256, manifest_sha256=args.manifest_sha256,
@@ -430,18 +433,98 @@ def cmd_evaluate_repair(args: argparse.Namespace) -> int:
         allowed = sampler_allowed(adapter, tf)
     else:
         allowed = make_allowed_for_adapter(adapter)
-    records = repair_drafts(adapter, drafts, batch_size=args.batch_size, allowed=allowed)
+    if args.method == "greedy":
+        records = repair_drafts(adapter, drafts, batch_size=args.batch_size, allowed=allowed)
+    elif args.method == "proseco":
+        records = repair_drafts_proseco(adapter, drafts, max_calls=args.max_calls,
+                                        batch_size=args.batch_size, allowed=allowed)
+    else:
+        raise SystemExit(f"unknown repair method {args.method!r}")
     summary = summarize_repair(records)
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     meta = {"command": "evaluate-repair", "time_utc": datetime.now(timezone.utc).isoformat(),
             "checkpoint": args.checkpoint, "model": model_id, "bank_identity": ident.to_dict(),
-            "n_drafts": len(drafts), "budget": args.budget, "split": args.split}
+            "n_drafts": len(drafts), "budget": args.budget, "split": args.split,
+            "method": args.method, "max_calls": args.max_calls if args.method == "proseco" else 1,
+            "note": "greedy is the milestone-5 one-forward screen; proseco is the milestone-6 fixed-point repair"}
     (out / "summary.json").write_text(json.dumps({"meta": meta, "repair": summary}, indent=2) + "\n")
     with open(out / "records.jsonl", "w") as f:
         for r in records:
             f.write(json.dumps(r, sort_keys=True) + "\n")
     print(json.dumps({"repair": summary, "out": str(out)}, indent=2))
+    return 0
+
+
+def cmd_evaluate_calls(args: argparse.Namespace) -> int:
+    """Full generation at fixed call caps. Validation (or train wiring) only. No budget is selected."""
+    from .evaluation.call_budget import BUDGET_NOTE, METHODS, run_call_budget, score_call_budget
+    from .evaluation.generation import by_setting
+    from .training.data import load_verified_examples, select_per_setting
+    from .training.model_io import load_trained_adapter
+    from .training.run import sampler_allowed, task_format
+
+    if args.split not in ("train", "val"):
+        raise SystemExit(
+            f"evaluate-calls never evaluates {args.split!r}; use val (or train for wiring checks). "
+            "Test splits cannot select a call budget.")
+    methods = [m.strip() for m in args.method.split(",") if m.strip()]
+    unknown = [m for m in methods if m not in METHODS]
+    if not methods or unknown:
+        raise SystemExit(f"methods must be a comma list from {METHODS}; got {args.method!r}")
+    budgets = [int(p.strip()) for p in args.budgets.split(",") if p.strip()]
+    if not budgets or any(b < 1 for b in budgets):
+        raise SystemExit("budgets must be comma-separated integers >= 1")
+    device = resolve_device(args.device)
+    tok, tf = task_format(args.model_dir, args.data_dir)
+    del tok
+    examples, ident = load_verified_examples(args.data_dir, args.split, args.manifest_sha256,
+                                             allowed_splits=("train", "val"))
+    settings = None
+    if args.settings != "all":
+        settings = set()
+        for s in args.settings.split(","):
+            fam, n, d = s.split(":")
+            settings.add((fam, int(n), int(d)))
+    chosen = select_per_setting(examples, args.n_per_setting, settings)
+    if args.n_examples is not None:
+        chosen = chosen[: int(args.n_examples)]
+    adapter, model_id = load_trained_adapter(args.checkpoint, device, args.model_dir)
+    allowed = sampler_allowed(adapter, tf)
+    block = None if args.block_length in (None, 0) else int(args.block_length)
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    rows, records = [], []
+    t_all = time.perf_counter()
+    for method in methods:
+        for budget in budgets:
+            run = run_call_budget(
+                adapter, chosen, method, budget, allowed, tf.fmt.slot_len, batch_size=args.batch_size,
+                omega=args.omega, corrector_steps=args.corrector_steps, block_length=block)
+            recs, agg = score_call_budget(chosen, run, tf)
+            records.extend(recs)
+            row = {"method": method, "max_calls": budget, **{k: agg[k] for k in agg}}
+            rows.append(row)
+            print(f"{method} max_calls={budget}: final={agg.get('final_answer_accuracy')} "
+                  f"calls/ex={agg.get('model_calls_per_example')} n={agg.get('n_examples')} "
+                  f"({agg.get('model_seconds')}s)", flush=True)
+    meta = {"command": "evaluate-calls", "time_utc": datetime.now(timezone.utc).isoformat(),
+            "checkpoint": args.checkpoint, "model": model_id, "eval_data": ident.to_dict(),
+            "split": args.split, "methods": methods, "budgets": budgets, "omega": args.omega,
+            "corrector_steps": args.corrector_steps, "block_length": block, "n_examples": len(chosen),
+            "batch_size": args.batch_size, "device": str(device), "budget_note": BUDGET_NOTE,
+            "label": "software run; not a claim that an experiment completed",
+            "experiment_completed": False,
+            "family_a_note": "Family A checkpoints are consumers of this harness. This command does not train.",
+            "proseco_note": "method proseco is the inference sampler, not proseco_gen_conf and not a Family A arm"}
+    summary = {"meta": meta, "rows": rows, "by_setting": by_setting(records),
+               "total_wall_seconds": round(time.perf_counter() - t_all, 3),
+               "environment": environment_report(device)}
+    (out / "summary.json").write_text(json.dumps(summary, indent=2, default=str) + "\n")
+    with open(out / "records.jsonl", "w") as f:
+        for r in records:
+            f.write(json.dumps(r, sort_keys=True) + "\n")
+    print(json.dumps({"out": str(out), "rows": len(rows), "n_examples": len(chosen)}, indent=2))
     return 0
 
 
@@ -594,12 +677,38 @@ def main(argv: list[str] | None = None) -> int:
     er.add_argument("--budget", default="4", help="primary comparison budget (D-044 default: 4)")
     er.add_argument("--n-examples", type=int, default=None)
     er.add_argument("--batch-size", type=int, default=32)
+    er.add_argument("--method", default="greedy", choices=["greedy", "proseco"],
+                    help="greedy = milestone-5 one forward (default); proseco = milestone-6 fixed-point repair")
+    er.add_argument("--max-calls", type=int, default=4,
+                    help="corrector iterations for --method proseco (ignored by greedy)")
     er.add_argument("--verify-shards", action="store_true", default=False)
     er.add_argument("--data-dir", default=None, help="for D-029 allowed-token mask via task format")
     er.add_argument("--model-dir", default="runs/hf/open-dcoder-0.5B")
     er.add_argument("--device", default="auto", choices=["cpu", "mps", "cuda", "auto"])
     er.add_argument("--out", required=True)
     er.set_defaults(func=cmd_evaluate_repair)
+
+    ec = sub.add_parser("evaluate-calls",
+                        help="full generation at fixed model-call budgets (val only; does not select a budget)")
+    ec.add_argument("--checkpoint", required=True)
+    ec.add_argument("--data-dir", required=True)
+    ec.add_argument("--manifest-sha256", required=True)
+    ec.add_argument("--split", default="val")
+    ec.add_argument("--method", required=True,
+                    help="comma list: monotone,proseco,d3im,extra_unmask")
+    ec.add_argument("--budgets", required=True, help="comma-separated max model calls, each an independent horizon")
+    ec.add_argument("--omega", type=int, default=2, help="ProSeCo corrector period (D-049 provisional default 2)")
+    ec.add_argument("--corrector-steps", type=int, default=4,
+                    help="max fixed-point iterations per due step (D-049 provisional default 4)")
+    ec.add_argument("--block-length", type=int, default=None, help="D3IM block length; omit for one block")
+    ec.add_argument("--settings", default="all")
+    ec.add_argument("--n-per-setting", type=int, default=10**9)
+    ec.add_argument("--n-examples", type=int, default=None, help="cap after the setting filter, file order")
+    ec.add_argument("--batch-size", type=int, default=32)
+    ec.add_argument("--model-dir", default="runs/hf/open-dcoder-0.5B")
+    ec.add_argument("--device", default="auto", choices=["cpu", "mps", "cuda", "auto"])
+    ec.add_argument("--out", required=True)
+    ec.set_defaults(func=cmd_evaluate_calls)
 
     from .drafts.commands import register as register_bank_commands
 
